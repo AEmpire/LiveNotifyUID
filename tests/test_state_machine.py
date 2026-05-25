@@ -13,6 +13,17 @@ def live(live_id="live-1"):
     )
 
 
+def live_without_id():
+    return LiveStatus(
+        platform=Platform.YOUTUBE,
+        external_id="UC1",
+        state=LiveState.LIVE,
+        live_id=None,
+        title="Stream",
+        room_url="https://www.youtube.com/channel/UC1/live",
+    )
+
+
 def test_unknown_to_live_does_not_notify_by_default():
     decision = decide_transition(
         previous_state=LiveState.UNKNOWN,
@@ -24,6 +35,17 @@ def test_unknown_to_live_does_not_notify_by_default():
     assert decision is TransitionDecision.RECORD_ONLY
 
 
+def test_unknown_to_live_notifies_on_startup_when_enabled():
+    decision = decide_transition(
+        previous_state=LiveState.UNKNOWN,
+        last_notified_live_id=None,
+        current=live(),
+        notify_on_startup_live=True,
+    )
+
+    assert decision is TransitionDecision.NOTIFY
+
+
 def test_offline_to_live_notifies():
     decision = decide_transition(
         previous_state=LiveState.OFFLINE,
@@ -33,6 +55,28 @@ def test_offline_to_live_notifies():
     )
 
     assert decision is TransitionDecision.NOTIFY
+
+
+def test_offline_to_live_with_missing_live_id_records_only():
+    decision = decide_transition(
+        previous_state=LiveState.OFFLINE,
+        last_notified_live_id=None,
+        current=live_without_id(),
+        notify_on_startup_live=False,
+    )
+
+    assert decision is TransitionDecision.RECORD_ONLY
+
+
+def test_unknown_to_live_with_startup_notify_but_missing_live_id_records_only():
+    decision = decide_transition(
+        previous_state=LiveState.UNKNOWN,
+        last_notified_live_id=None,
+        current=live_without_id(),
+        notify_on_startup_live=True,
+    )
+
+    assert decision is TransitionDecision.RECORD_ONLY
 
 
 def test_live_to_live_with_same_live_id_does_not_notify():

@@ -20,7 +20,10 @@ def decide_transition(
     if current.state is not LiveState.LIVE:
         return TransitionDecision.RECORD_ONLY
 
-    if current.live_id and current.live_id == last_notified_live_id:
+    if current.live_id is None:
+        return TransitionDecision.RECORD_ONLY
+
+    if current.live_id == last_notified_live_id:
         return TransitionDecision.RECORD_ONLY
 
     if previous_state is LiveState.UNKNOWN:
