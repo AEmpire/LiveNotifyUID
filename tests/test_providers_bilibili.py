@@ -1,0 +1,80 @@
+import httpx
+import pytest
+import respx
+
+from LiveNotifyUID.providers.base import ProviderError
+from LiveNotifyUID.providers.bilibili import BilibiliProvider
+from LiveNotifyUID.types import LiveState, Platform
+
+
+BILIBILI_ENDPOINT = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_live_response():
+    route = respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 1,
+                        "room_id": 678,
+                        "title": "Bili Live",
+                        "uname": "主播A",
+                        "cover_from_user": "https://cover.example/a.jpg",
+                    }
+                },
+            },
+        )
+    )
+
+    provider = BilibiliProvider()
+    status = await provider.check_channel("12345", timeout_seconds=10)
+
+    assert route.calls.last.request.url.params.get_list("uids[]") == ["12345"]
+    assert status.platform is Platform.BILI
+    assert status.state is LiveState.LIVE
+    assert status.live_id == "678"
+    assert status.room_url == "https://live.bilibili.com/678"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_offline_response():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 0, "data": {"12345": {"live_status": 0, "uname": "主播A"}}},
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.state is LiveState.OFFLINE
+    assert status.display_name == "主播A"
+    assert status.raw_metadata["live_status"] == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_api_code_error_raises_provider_error():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(200, json={"code": -400, "message": "bad uid"})
+    )
+
+    with pytest.raises(ProviderError, match="bad uid"):
+        await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_uid_not_found_raises_provider_error():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(200, json={"code": 0, "data": {}})
+    )
+
+    with pytest.raises(ProviderError, match="12345"):
+        await BilibiliProvider().check_channel("12345", timeout_seconds=10)
