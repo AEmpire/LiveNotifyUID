@@ -43,6 +43,33 @@ async def test_bilibili_live_response():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_bilibili_live_response_uses_keyframe_as_cover_fallback():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 1,
+                        "room_id": 678,
+                        "title": "Bili Live",
+                        "uname": "主播A",
+                        "keyframe": "https://cover.example/keyframe.jpg",
+                    }
+                },
+            },
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.state is LiveState.LIVE
+    assert status.cover_url == "https://cover.example/keyframe.jpg"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_bilibili_offline_response():
     respx.get(BILIBILI_ENDPOINT).mock(
         return_value=httpx.Response(
@@ -56,6 +83,32 @@ async def test_bilibili_offline_response():
     assert status.state is LiveState.OFFLINE
     assert status.display_name == "主播A"
     assert status.raw_metadata["live_status"] == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_live_status_without_room_id_returns_offline():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 1,
+                        "title": "Bili Live",
+                        "uname": "主播A",
+                    }
+                },
+            },
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.state is LiveState.OFFLINE
+    assert status.live_id is None
+    assert status.raw_metadata["live_status"] == 1
 
 
 @pytest.mark.asyncio

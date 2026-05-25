@@ -36,7 +36,7 @@ class BilibiliProvider:
             raise ProviderError(f"Bilibili UID data is invalid: {external_id}")
 
         live_status = raw.get("live_status")
-        if live_status == 1:
+        if live_status == 1 and raw.get("room_id"):
             return self._live_status(external_id, raw)
 
         return LiveStatus(
@@ -60,7 +60,7 @@ class BilibiliProvider:
             title=_string_or_none(raw.get("title")),
             display_name=_string_or_none(raw.get("uname")),
             room_url=room_url,
-            cover_url=_string_or_none(raw.get("cover_from_user")),
+            cover_url=_string_or_none(raw.get("cover_from_user") or raw.get("keyframe")),
             raw_metadata=raw,
         )
 
