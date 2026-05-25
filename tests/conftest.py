@@ -7,6 +7,6 @@ from LiveNotifyUID.database import LiveSubscription
 @pytest.fixture()
 def session():
     engine = create_engine("sqlite:///:memory:")
-    SQLModel.metadata.create_all(engine)
+    SQLModel.metadata.create_all(engine, tables=[LiveSubscription.__table__])
     with Session(engine) as session:
         yield session

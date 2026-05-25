@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case
+from sqlalchemy import UniqueConstraint, case
 from sqlmodel import Field, Session, SQLModel, select
 
 from .types import LiveState, Platform
@@ -12,8 +12,22 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def to_naive_utc(value: datetime) -> datetime:
+    """Normalize aware or naive-UTC datetimes for portable DB storage."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def naive_utc_now() -> datetime:
+    return to_naive_utc(utc_now())
+
+
 class LiveSubscription(SQLModel, table=True):
     __tablename__ = "live_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("platform", "external_id", name="uq_live_subscription_target"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     platform: str = Field(index=True)
@@ -29,8 +43,8 @@ class LiveSubscription(SQLModel, table=True):
     last_notified_at: datetime | None = None
     failure_count: int = 0
     last_error: str | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=naive_utc_now)
+    updated_at: datetime = Field(default_factory=naive_utc_now)
 
 
 class SubscriptionRepository:
@@ -72,7 +86,10 @@ class SubscriptionRepository:
         now: datetime,
         failure_backoff_minutes: int,
     ) -> list[LiveSubscription]:
-        earliest_failed_check = now - timedelta(minutes=failure_backoff_minutes)
+        normalized_now = to_naive_utc(now)
+        earliest_failed_check = normalized_now - timedelta(
+            minutes=failure_backoff_minutes
+        )
         unchecked_first = case(
             (LiveSubscription.last_checked_at.is_(None), 0),
             else_=1,
@@ -105,7 +122,8 @@ class SubscriptionRepository:
         room_url: str | None = None,
     ) -> LiveSubscription:
         subscription = self._require(subscription_id)
-        subscription.last_checked_at = checked_at
+        normalized_checked_at = to_naive_utc(checked_at)
+        subscription.last_checked_at = normalized_checked_at
         subscription.last_state = state.value
         subscription.last_live_id = live_id
         subscription.last_live_title = live_title
@@ -113,7 +131,7 @@ class SubscriptionRepository:
             subscription.room_url = room_url
         subscription.failure_count = 0
         subscription.last_error = None
-        subscription.updated_at = checked_at
+        subscription.updated_at = normalized_checked_at
         self.session.add(subscription)
         self.session.commit()
         self.session.refresh(subscription)
@@ -127,9 +145,10 @@ class SubscriptionRepository:
         notified_at: datetime,
     ) -> LiveSubscription:
         subscription = self._require(subscription_id)
+        normalized_notified_at = to_naive_utc(notified_at)
         subscription.last_notified_live_id = live_id
-        subscription.last_notified_at = notified_at
-        subscription.updated_at = notified_at
+        subscription.last_notified_at = normalized_notified_at
+        subscription.updated_at = normalized_notified_at
         self.session.add(subscription)
         self.session.commit()
         self.session.refresh(subscription)
@@ -143,10 +162,11 @@ class SubscriptionRepository:
         checked_at: datetime,
     ) -> LiveSubscription:
         subscription = self._require(subscription_id)
+        normalized_checked_at = to_naive_utc(checked_at)
         subscription.failure_count += 1
         subscription.last_error = error
-        subscription.last_checked_at = checked_at
-        subscription.updated_at = checked_at
+        subscription.last_checked_at = normalized_checked_at
+        subscription.updated_at = normalized_checked_at
         self.session.add(subscription)
         self.session.commit()
         self.session.refresh(subscription)
@@ -163,7 +183,7 @@ class SubscriptionRepository:
     def set_enabled(self, subscription_id: int, enabled: bool) -> LiveSubscription:
         subscription = self._require(subscription_id)
         subscription.enabled = enabled
-        subscription.updated_at = utc_now()
+        subscription.updated_at = naive_utc_now()
         self.session.add(subscription)
         self.session.commit()
         self.session.refresh(subscription)
@@ -178,8 +198,11 @@ class SubscriptionRepository:
 
 try:
     from gsuid_core.webconsole.mount_app import GsAdminModel, PageSchema, site
-except ImportError:
-    pass
+except ModuleNotFoundError as exc:
+    if exc.name and exc.name.split(".")[0] == "gsuid_core":
+        pass
+    else:
+        raise
 else:
 
     @site.register_admin
