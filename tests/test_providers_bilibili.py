@@ -131,3 +131,29 @@ async def test_bilibili_uid_not_found_raises_provider_error():
 
     with pytest.raises(ProviderError, match="12345"):
         await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_list_payload_raises_provider_error():
+    respx.get(BILIBILI_ENDPOINT).mock(return_value=httpx.Response(200, json=[]))
+
+    with pytest.raises(ProviderError, match="payload"):
+        await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"code": 0},
+        {"code": 0, "data": []},
+        {"code": 0, "data": {"12345": []}},
+    ],
+)
+async def test_bilibili_malformed_data_raises_provider_error(payload):
+    respx.get(BILIBILI_ENDPOINT).mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(ProviderError):
+        await BilibiliProvider().check_channel("12345", timeout_seconds=10)

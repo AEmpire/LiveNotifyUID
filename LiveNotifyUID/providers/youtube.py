@@ -37,8 +37,15 @@ class YouTubeProvider:
             raise ProviderError(f"YouTube HTTP error: {exc.response.status_code}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"YouTube request failed: {exc}") from exc
+        except ValueError as exc:
+            raise ProviderError("YouTube response JSON is invalid") from exc
 
-        items = payload.get("items") or []
+        if not isinstance(payload, dict):
+            raise ProviderError("YouTube response payload is invalid")
+
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            raise ProviderError("YouTube response items is invalid")
         if not items:
             return LiveStatus(
                 platform=Platform.YOUTUBE,
@@ -51,7 +58,11 @@ class YouTubeProvider:
         if not isinstance(item, dict):
             raise ProviderError("YouTube item is invalid")
 
-        video_id = (item.get("id") or {}).get("videoId")
+        item_id = item.get("id") or {}
+        if not isinstance(item_id, dict):
+            raise ProviderError("YouTube live item id is invalid")
+
+        video_id = item_id.get("videoId")
         if not video_id:
             raise ProviderError("YouTube live item missing videoId")
 
@@ -76,16 +87,25 @@ class YouTubeProvider:
 def _parse_published_at(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ProviderError("YouTube live item publishedAt is invalid") from exc
 
 
 def _thumbnail_url(thumbnails: Any) -> str | None:
-    if not isinstance(thumbnails, dict):
+    if thumbnails is None:
         return None
+    if not isinstance(thumbnails, dict):
+        raise ProviderError("YouTube live item thumbnails is invalid")
 
     for key in ("high", "standard", "medium", "default"):
         thumbnail = thumbnails.get(key)
-        if isinstance(thumbnail, dict) and thumbnail.get("url"):
+        if thumbnail is None:
+            continue
+        if not isinstance(thumbnail, dict):
+            raise ProviderError("YouTube live item thumbnails is invalid")
+        if thumbnail.get("url"):
             return str(thumbnail["url"])
     return None
 

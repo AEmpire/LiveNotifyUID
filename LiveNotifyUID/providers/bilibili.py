@@ -21,14 +21,21 @@ class BilibiliProvider:
             raise ProviderError(f"Bilibili HTTP error: {exc.response.status_code}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"Bilibili request failed: {exc}") from exc
+        except ValueError as exc:
+            raise ProviderError("Bilibili response JSON is invalid") from exc
+
+        if not isinstance(payload, dict):
+            raise ProviderError("Bilibili response payload is invalid")
 
         code = payload.get("code")
         if code != 0:
             message = payload.get("message") or payload.get("msg") or f"code {code}"
             raise ProviderError(f"Bilibili API error: {message}")
 
-        data = payload.get("data") or {}
-        if not isinstance(data, dict) or external_id not in data:
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ProviderError("Bilibili response data is invalid")
+        if external_id not in data:
             raise ProviderError(f"Bilibili UID not found: {external_id}")
 
         raw = data[external_id]

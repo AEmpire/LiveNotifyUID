@@ -85,3 +85,73 @@ async def test_youtube_item_missing_video_id_raises_provider_error():
 
     with pytest.raises(ProviderError, match="videoId"):
         await YouTubeProvider(api_key="key").check_channel("UCabc", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_youtube_list_payload_raises_provider_error():
+    respx.get(YOUTUBE_ENDPOINT).mock(return_value=httpx.Response(200, json=[]))
+
+    with pytest.raises(ProviderError, match="payload"):
+        await YouTubeProvider(api_key="key").check_channel("UCabc", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize("items", [{"0": {}}, "not-a-list"])
+async def test_youtube_non_list_items_raises_provider_error(items):
+    respx.get(YOUTUBE_ENDPOINT).mock(return_value=httpx.Response(200, json={"items": items}))
+
+    with pytest.raises(ProviderError, match="items"):
+        await YouTubeProvider(api_key="key").check_channel("UCabc", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_youtube_invalid_published_at_raises_provider_error():
+    respx.get(YOUTUBE_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": {"videoId": "video-1"},
+                        "snippet": {"publishedAt": "not-a-date"},
+                    }
+                ]
+            },
+        )
+    )
+
+    with pytest.raises(ProviderError, match="publishedAt"):
+        await YouTubeProvider(api_key="key").check_channel("UCabc", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    "item,error_match",
+    [
+        ({"id": "not-a-dict", "snippet": {}}, "id"),
+        ({"id": {"videoId": "video-1"}, "snippet": "not-a-dict"}, "snippet"),
+        (
+            {
+                "id": {"videoId": "video-1"},
+                "snippet": {"thumbnails": "not-a-dict"},
+            },
+            "thumbnails",
+        ),
+        (
+            {
+                "id": {"videoId": "video-1"},
+                "snippet": {"thumbnails": {"high": "not-a-dict"}},
+            },
+            "thumbnails",
+        ),
+    ],
+)
+async def test_youtube_malformed_live_item_structures_raise_provider_error(item, error_match):
+    respx.get(YOUTUBE_ENDPOINT).mock(return_value=httpx.Response(200, json={"items": [item]}))
+
+    with pytest.raises(ProviderError, match=error_match):
+        await YouTubeProvider(api_key="key").check_channel("UCabc", timeout_seconds=10)
