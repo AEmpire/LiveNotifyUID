@@ -1,4 +1,12 @@
-from LiveNotifyUID.config import LiveNotifySettings, coerce_int
+import builtins
+
+from LiveNotifyUID.config import (
+    LiveNotifySettings,
+    coerce_bool,
+    coerce_int,
+    get_settings,
+    settings_from_mapping,
+)
 
 
 def test_settings_use_spec_defaults():
@@ -19,3 +27,49 @@ def test_coerce_int_clamps_bad_values_to_default():
     assert coerce_int("12", default=5, minimum=1) == 12
     assert coerce_int("0", default=5, minimum=1) == 5
     assert coerce_int("abc", default=5, minimum=1) == 5
+
+
+def test_settings_from_mapping_handles_none_strings_and_boolean_values():
+    settings = settings_from_mapping(
+        {
+            "youtube_api_key": None,
+            "discord_channel_id": None,
+            "embed_enabled": "false",
+            "notify_on_startup_live": "yes",
+        }
+    )
+
+    assert settings.youtube_api_key == ""
+    assert settings.discord_channel_id == ""
+    assert settings.embed_enabled is False
+    assert settings.notify_on_startup_live is True
+
+
+def test_coerce_bool_parses_true_false_and_default_values():
+    assert coerce_bool(True, default=False) is True
+    assert coerce_bool(False, default=True) is False
+    assert coerce_bool("true", default=False) is True
+    assert coerce_bool("1", default=False) is True
+    assert coerce_bool("yes", default=False) is True
+    assert coerce_bool("on", default=False) is True
+    assert coerce_bool("false", default=True) is False
+    assert coerce_bool("0", default=True) is False
+    assert coerce_bool("no", default=True) is False
+    assert coerce_bool("off", default=True) is False
+    assert coerce_bool("maybe", default=True) is True
+    assert coerce_bool(None, default=False) is False
+
+
+def test_get_settings_returns_defaults_when_gscore_is_unavailable(monkeypatch):
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("gsuid_core"):
+            raise ModuleNotFoundError(
+                "No module named 'gsuid_core'", name="gsuid_core"
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert get_settings() == LiveNotifySettings()

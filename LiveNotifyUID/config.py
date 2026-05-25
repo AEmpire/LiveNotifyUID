@@ -24,6 +24,12 @@ def coerce_bool(value: Any, *, default: bool) -> bool:
     return default
 
 
+def coerce_str(value: Any, *, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
 @dataclass(slots=True)
 class LiveNotifySettings:
     youtube_api_key: str = ""
@@ -39,8 +45,8 @@ class LiveNotifySettings:
 
 def settings_from_mapping(data: dict[str, Any]) -> LiveNotifySettings:
     return LiveNotifySettings(
-        youtube_api_key=str(data.get("youtube_api_key", "")),
-        discord_channel_id=str(data.get("discord_channel_id", "")),
+        youtube_api_key=coerce_str(data.get("youtube_api_key")),
+        discord_channel_id=coerce_str(data.get("discord_channel_id")),
         poll_interval_seconds=coerce_int(
             data.get("poll_interval_seconds"), default=300, minimum=30
         ),
@@ -69,8 +75,10 @@ def get_settings() -> LiveNotifySettings:
             GsIntConfig,
             GsStrConfig,
         )
-    except ImportError:
-        return LiveNotifySettings()
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".")[0] == "gsuid_core":
+            return LiveNotifySettings()
+        raise
 
     config_default: dict[str, GSC] = {
         "youtube_api_key": GsStrConfig("YouTube API Key", "YouTube Data API key", ""),
