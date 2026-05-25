@@ -1,0 +1,21 @@
+[project]
+name = "LiveNotifyUID"
+version = "0.1.0"
+description = "GsCore plugin for Bilibili and YouTube live notifications"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "sqlmodel>=0.0.21",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "respx>=0.21",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
