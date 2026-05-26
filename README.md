@@ -4,7 +4,7 @@ GsCore plugin for Bilibili and YouTube live notifications.
 
 ## Install
 
-Clone this repository into `gsuid_core/plugins/LiveNotifyUID`, install the runtime dependencies in the GsCore environment, then restart GsCore.
+Clone this repository into `gsuid_core/plugins/LiveNotifyUID`, install the runtime dependencies in the GsCore environment, then restart GsCore. The repository root is importable as the `LiveNotifyUID` plugin package for this layout.
 
 ## VPS Deployment
 
