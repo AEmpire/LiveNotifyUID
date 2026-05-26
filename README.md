@@ -13,7 +13,7 @@ Clone this repository into `gsuid_core/plugins/LiveNotifyUID`, install the runti
    `pip install httpx sqlmodel`
 3. Restart GsCore.
 4. Set `youtube_api_key` and `discord_channel_id` in the LiveNotifyUID config.
-5. Add subscriptions with `/live add bili <uid>` or `/live add youtube <channel_id>`.
+5. Add subscriptions with `/live add bili <uid>` or `/live add youtube <channel_id_or_url>`.
 
 ## Configure
 
@@ -32,7 +32,7 @@ The same values are stored in `gsuid_core/data/LiveNotifyUID/config.json`.
 Both `live ...` and `/live ...` are accepted by the plugin prefix.
 
 - `/live add bili <uid> [display_name]`
-- `/live add youtube <channel_id> [display_name]`
+- `/live add youtube <channel_id_or_url> [display_name]`
 - `/live remove <id>`
 - `/live list`
 - `/live enable <id>`
@@ -46,7 +46,7 @@ The plugin only sends a notification on `offline -> live`. On first startup, alr
 
 ## First-Version Limits
 
-- YouTube input is Channel ID.
+- YouTube input accepts Channel ID, `@handle`, `/@handle/...` URLs, and `/channel/UC...` URLs.
 - Bilibili input is UID.
 - One Discord target channel is configured globally.
 - Offline notifications and repeated reminders are not sent.

@@ -12,7 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from .config import LiveNotifySettings
 from .database import LiveSubscription, SubscriptionRepository
-from .providers.base import LiveProvider
+from .providers.base import LiveProvider, ProviderError
 from .types import LiveStatus, Platform
 
 _live_notify_engine: Engine | None = None
@@ -239,11 +239,29 @@ async def execute_live_command(
         if parsed.external_id is None:
             return format_help()
 
+        external_id = parsed.external_id
+        display_name = parsed.display_name
+        platform = Platform(parsed.platform)
+
+        if platform is Platform.YOUTUBE and providers is not None:
+            provider = providers.get(Platform.YOUTUBE)
+            resolver = getattr(provider, "resolve_channel_reference", None)
+            if resolver is not None:
+                try:
+                    resolved = await resolver(
+                        external_id,
+                        timeout_seconds=settings.request_timeout_seconds,
+                    )
+                except ProviderError as exc:
+                    return f"YouTube 频道解析失败：{exc}"
+                external_id = resolved.channel_id
+                display_name = display_name or resolved.display_name
+
         try:
             subscription = repo.create_subscription(
-                platform=Platform(parsed.platform),
-                external_id=parsed.external_id,
-                display_name=parsed.display_name,
+                platform=platform,
+                external_id=external_id,
+                display_name=display_name,
             )
         except IntegrityError:
             session.rollback()

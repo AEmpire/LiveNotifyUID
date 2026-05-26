@@ -5,11 +5,32 @@ import pytest
 import respx
 
 from LiveNotifyUID.providers.base import ProviderError
-from LiveNotifyUID.providers.youtube import YouTubeProvider
+from LiveNotifyUID.providers.youtube import (
+    YouTubeProvider,
+    extract_youtube_channel_id,
+    extract_youtube_handle,
+)
 from LiveNotifyUID.types import LiveState, Platform
 
 
 YOUTUBE_ENDPOINT = "https://www.googleapis.com/youtube/v3/search"
+YOUTUBE_CHANNELS_ENDPOINT = "https://www.googleapis.com/youtube/v3/channels"
+
+
+def test_extract_youtube_channel_id_from_raw_id_and_channel_url():
+    assert extract_youtube_channel_id("UCabc") == "UCabc"
+    assert (
+        extract_youtube_channel_id("https://www.youtube.com/channel/UCabc/live")
+        == "UCabc"
+    )
+
+
+def test_extract_youtube_handle_from_raw_handle_and_handle_url():
+    assert extract_youtube_handle("@UTANOch") == "@UTANOch"
+    assert (
+        extract_youtube_handle("https://www.youtube.com/@UTANOch/posts")
+        == "@UTANOch"
+    )
 
 
 @pytest.mark.asyncio
@@ -65,6 +86,56 @@ async def test_youtube_offline_response():
 async def test_youtube_missing_api_key_raises_provider_error():
     with pytest.raises(ProviderError, match="api key"):
         await YouTubeProvider(api_key="").check_channel("UCabc", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_youtube_resolves_handle_reference_to_channel_id():
+    route = respx.get(YOUTUBE_CHANNELS_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": "UCresolved",
+                        "snippet": {"title": "Utano"},
+                    }
+                ]
+            },
+        )
+    )
+
+    resolved = await YouTubeProvider(api_key="key").resolve_channel_reference(
+        "https://www.youtube.com/@UTANOch/posts",
+        timeout_seconds=10,
+    )
+
+    params = route.calls.last.request.url.params
+    assert params["part"] == "id,snippet"
+    assert params["forHandle"] == "@UTANOch"
+    assert params["key"] == "key"
+    assert resolved.channel_id == "UCresolved"
+    assert resolved.display_name == "Utano"
+
+
+@pytest.mark.asyncio
+async def test_youtube_resolve_channel_reference_keeps_channel_id_without_api_key():
+    resolved = await YouTubeProvider(api_key="").resolve_channel_reference(
+        "https://www.youtube.com/channel/UCabc",
+        timeout_seconds=10,
+    )
+
+    assert resolved.channel_id == "UCabc"
+    assert resolved.display_name is None
+
+
+@pytest.mark.asyncio
+async def test_youtube_resolve_handle_without_api_key_raises_provider_error():
+    with pytest.raises(ProviderError, match="api key"):
+        await YouTubeProvider(api_key="").resolve_channel_reference(
+            "@UTANOch",
+            timeout_seconds=10,
+        )
 
 
 @pytest.mark.asyncio

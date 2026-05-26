@@ -9,6 +9,7 @@ from LiveNotifyUID.commands import (
     _should_swallow_optional_gscore_import_error,
     parse_live_command,
 )
+from LiveNotifyUID.providers.youtube import ResolvedYouTubeChannel
 from LiveNotifyUID.types import LiveState, LiveStatus, Platform
 
 
@@ -22,6 +23,19 @@ class FakeProvider:
     ) -> LiveStatus:
         self.checked.append(external_id)
         return self.status
+
+
+class FakeResolvingYouTubeProvider(FakeProvider):
+    def __init__(self, status: LiveStatus, resolved: ResolvedYouTubeChannel):
+        super().__init__(status)
+        self.resolved = resolved
+        self.references: list[str] = []
+
+    async def resolve_channel_reference(
+        self, reference: str, *, timeout_seconds: float
+    ) -> ResolvedYouTubeChannel:
+        self.references.append(reference)
+        return self.resolved
 
 
 def test_parse_add_bilibili_command():
@@ -240,6 +254,32 @@ async def test_execute_live_command_add_performs_initial_check_without_notificat
     assert response == "已添加直播监听 #1: bili 12345\n初始状态：live"
     assert provider.checked == ["12345"]
     assert "#1 bili 主播A 启用，状态 live" in listed
+
+
+@pytest.mark.asyncio
+async def test_execute_live_command_add_resolves_youtube_handle_url(session):
+    settings = LiveNotifySettings(youtube_api_key="token")
+    provider = FakeResolvingYouTubeProvider(
+        LiveStatus(
+            platform=Platform.YOUTUBE,
+            external_id="UCresolved",
+            state=LiveState.OFFLINE,
+        ),
+        ResolvedYouTubeChannel(channel_id="UCresolved", display_name="Utano"),
+    )
+
+    response = await execute_live_command(
+        session,
+        parse_live_command("add youtube https://www.youtube.com/@UTANOch/posts"),
+        settings,
+        providers={Platform.YOUTUBE: provider},
+    )
+    listed = build_command_response(session, parse_live_command("list"), settings)
+
+    assert provider.references == ["https://www.youtube.com/@UTANOch/posts"]
+    assert provider.checked == ["UCresolved"]
+    assert response == "已添加直播监听 #1: youtube UCresolved\n初始状态：offline"
+    assert "#1 youtube Utano 启用，状态 offline" in listed
 
 
 @pytest.mark.asyncio
