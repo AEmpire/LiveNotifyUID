@@ -26,11 +26,11 @@ def build_default_providers(
 
 
 async def run_poll_once(
-    *,
     repo: SubscriptionRepository,
     settings: LiveNotifySettings,
     providers: Mapping[Platform, LiveProvider],
     send: SendFunc,
+    *,
     now: datetime | None = None,
 ) -> None:
     current_time = now or datetime.now(timezone.utc)

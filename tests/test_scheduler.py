@@ -30,6 +30,30 @@ class FakeNotifier:
 
 
 @pytest.mark.asyncio
+async def test_run_poll_once_accepts_positional_core_arguments(session):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.BILI, external_id="123", display_name="主播"
+    )
+    status = LiveStatus(
+        platform=Platform.BILI,
+        external_id="123",
+        state=LiveState.OFFLINE,
+    )
+
+    await run_poll_once(
+        repo,
+        LiveNotifySettings(),
+        {Platform.BILI: FakeProvider(status)},
+        FakeNotifier().send,
+        now=datetime(2026, 5, 25, 1, tzinfo=timezone.utc),
+    )
+
+    updated = repo.get(subscription.id)
+    assert updated.last_state == LiveState.OFFLINE.value
+
+
+@pytest.mark.asyncio
 async def test_run_poll_once_notifies_offline_to_live(session):
     repo = SubscriptionRepository(session)
     subscription = repo.create_subscription(
