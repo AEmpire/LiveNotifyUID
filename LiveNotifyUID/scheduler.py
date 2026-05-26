@@ -19,6 +19,7 @@ from .types import LiveState, LiveStatus, Platform
 logger = logging.getLogger(__name__)
 
 SendFunc = Callable[[LiveStatus], Awaitable[None]]
+NOTIFICATION_FAILED_PREFIX = "notification failed:"
 
 
 def build_default_providers(
@@ -108,6 +109,8 @@ async def _check_subscription(
     should_notify = decision is TransitionDecision.NOTIFY or _should_retry_unnotified_live(
         previous_state=previous_state,
         last_notified_live_id=subscription.last_notified_live_id,
+        last_live_id=subscription.last_live_id,
+        last_error=subscription.last_error,
         current=status,
     )
     repo.mark_checked(
@@ -128,7 +131,7 @@ async def _check_subscription(
         logger.exception("live notification failed")
         repo.mark_failure(
             subscription.id,
-            error=f"notification failed: {exc}",
+            error=f"{NOTIFICATION_FAILED_PREFIX} {exc}",
             checked_at=checked_at,
         )
         return
@@ -151,13 +154,18 @@ def _should_retry_unnotified_live(
     *,
     previous_state: LiveState,
     last_notified_live_id: str | None,
+    last_live_id: str | None,
+    last_error: str | None,
     current: LiveStatus,
 ) -> bool:
     return (
         previous_state is LiveState.LIVE
         and current.state is LiveState.LIVE
         and current.live_id is not None
+        and current.live_id == last_live_id
         and current.live_id != last_notified_live_id
+        and last_error is not None
+        and last_error.startswith(NOTIFICATION_FAILED_PREFIX)
     )
 
 

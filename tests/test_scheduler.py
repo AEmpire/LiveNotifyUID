@@ -185,6 +185,45 @@ async def test_run_poll_once_does_not_notify_unknown_to_live_by_default(session)
 
 
 @pytest.mark.asyncio
+async def test_run_poll_once_keeps_startup_suppressed_live_silent_on_second_poll(
+    session,
+):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.BILI, external_id="123", display_name="主播"
+    )
+    status = LiveStatus(
+        platform=Platform.BILI,
+        external_id="123",
+        state=LiveState.LIVE,
+        live_id="startup-live",
+    )
+    notifier = FakeNotifier()
+    first_run_at = datetime(2026, 5, 25, 1, tzinfo=timezone.utc)
+
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(discord_channel_id="discord"),
+        providers={Platform.BILI: FakeProvider(status)},
+        send=notifier.send,
+        now=first_run_at,
+    )
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(discord_channel_id="discord"),
+        providers={Platform.BILI: FakeProvider(status)},
+        send=notifier.send,
+        now=first_run_at + timedelta(minutes=1),
+    )
+
+    updated = repo.get(subscription.id)
+    assert notifier.sent == []
+    assert updated.last_state == LiveState.LIVE.value
+    assert updated.last_live_id == "startup-live"
+    assert updated.last_notified_live_id is None
+
+
+@pytest.mark.asyncio
 async def test_run_poll_once_notification_failure_records_error_without_marking_notified(
     session,
 ):
