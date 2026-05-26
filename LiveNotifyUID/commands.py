@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -10,10 +12,12 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from .config import LiveNotifySettings
 from .database import LiveSubscription, SubscriptionRepository
-from .types import Platform
+from .providers.base import LiveProvider
+from .types import LiveStatus, Platform
 
 _live_notify_engine: Engine | None = None
 _live_notify_engine_path: Path | None = None
+LIVE_COMMAND_TRIGGER = ""
 
 
 @dataclass(slots=True)
@@ -51,7 +55,22 @@ def parse_live_command(text: str) -> ParsedCommand:
     return ParsedCommand(action="invalid")
 
 
-def normalize_live_handler_text(text: str | None) -> str | None:
+def normalize_live_handler_text(
+    text: str | None,
+    *,
+    raw_text: str | None = None,
+) -> str | None:
+    if raw_text is not None:
+        stripped_raw = raw_text.strip()
+        lowered_raw = stripped_raw.lower()
+        command = "live"
+        if (
+            lowered_raw.startswith(command)
+            and len(stripped_raw) > len(command)
+            and not stripped_raw[len(command)].isspace()
+        ):
+            return None
+
     stripped = (text or "").strip()
     lowered = stripped.lower()
     command = "live"
@@ -199,6 +218,119 @@ def build_command_response(
     return format_help()
 
 
+async def execute_live_command(
+    session: Session,
+    parsed: ParsedCommand,
+    settings: LiveNotifySettings,
+    *,
+    providers: Mapping[Platform, LiveProvider] | None = None,
+    now: datetime | None = None,
+) -> str:
+    if parsed.action in {"help", "invalid"}:
+        return format_help()
+
+    repo = SubscriptionRepository(session)
+    checked_at = now or datetime.now(timezone.utc)
+
+    if parsed.action == "add":
+        if parsed.platform not in {Platform.BILI.value, Platform.YOUTUBE.value}:
+            return "不支持的平台，请使用 bili 或 youtube。"
+        if parsed.external_id is None:
+            return format_help()
+
+        try:
+            subscription = repo.create_subscription(
+                platform=Platform(parsed.platform),
+                external_id=parsed.external_id,
+                display_name=parsed.display_name,
+            )
+        except IntegrityError:
+            session.rollback()
+            return "该直播监听已存在"
+
+        response = (
+            "已添加直播监听 "
+            f"#{subscription.id}: {subscription.platform} {subscription.external_id}"
+        )
+        if providers is None:
+            return response
+
+        status, error = await _refresh_subscription_status(
+            repo=repo,
+            subscription=subscription,
+            settings=settings,
+            providers=providers,
+            checked_at=checked_at,
+        )
+        if error is not None:
+            return f"{response}\n初始检查失败：{error}"
+        if status is None:
+            return response
+        return f"{response}\n初始状态：{status.state.value}"
+
+    if parsed.action == "check" and parsed.subscription_id is not None:
+        row = repo.get(parsed.subscription_id)
+        if row is None:
+            return "未找到该直播监听"
+
+        if providers is not None:
+            await _refresh_subscription_status(
+                repo=repo,
+                subscription=row,
+                settings=settings,
+                providers=providers,
+                checked_at=checked_at,
+            )
+            row = repo.get(parsed.subscription_id)
+            if row is None:
+                return "未找到该直播监听"
+        return _format_subscription_detail(row)
+
+    return build_command_response(session, parsed, settings)
+
+
+async def _refresh_subscription_status(
+    *,
+    repo: SubscriptionRepository,
+    subscription: LiveSubscription,
+    settings: LiveNotifySettings,
+    providers: Mapping[Platform, LiveProvider],
+    checked_at: datetime,
+) -> tuple[LiveStatus | None, str | None]:
+    try:
+        platform = Platform(subscription.platform)
+    except ValueError:
+        error = f"unknown platform: {subscription.platform}"
+        repo.mark_failure(subscription.id, error=error, checked_at=checked_at)
+        return None, error
+
+    provider = providers.get(platform)
+    if provider is None:
+        error = f"missing provider for platform: {platform.value}"
+        repo.mark_failure(subscription.id, error=error, checked_at=checked_at)
+        return None, error
+
+    try:
+        status = await provider.check_channel(
+            subscription.external_id,
+            timeout_seconds=settings.request_timeout_seconds,
+        )
+    except Exception as exc:
+        error = str(exc)
+        repo.mark_failure(subscription.id, error=error, checked_at=checked_at)
+        return None, error
+
+    repo.mark_checked(
+        subscription.id,
+        checked_at=checked_at,
+        state=status.state,
+        live_id=status.live_id,
+        live_title=status.title,
+        room_url=status.room_url,
+    )
+    return status, None
+
+
 try:
     from gsuid_core.bot import Bot
     from gsuid_core.data_store import get_res_path
@@ -215,15 +347,19 @@ except ModuleNotFoundError as exc:
 
 if SV is not None and get_res_path is not None:
     from .config import get_settings
+    from .scheduler import build_default_providers
 
     live_sv = SV("直播监听管理", pm=3)
 
     def open_repo() -> Session:
         return Session(_get_live_notify_engine(get_res_path))
 
-    @live_sv.on_command("live", block=True)
+    @live_sv.on_command(LIVE_COMMAND_TRIGGER, block=True)
     async def handle_live_command(bot: Bot, ev: Event):
-        normalized = normalize_live_handler_text(getattr(ev, "text", ""))
+        normalized = normalize_live_handler_text(
+            getattr(ev, "text", ""),
+            raw_text=getattr(ev, "raw_text", None),
+        )
         parsed = (
             ParsedCommand(action="invalid")
             if normalized is None
@@ -231,7 +367,12 @@ if SV is not None and get_res_path is not None:
         )
         settings = get_settings()
         with open_repo() as session:
-            response = build_command_response(session, parsed, settings)
+            response = await execute_live_command(
+                session,
+                parsed,
+                settings,
+                providers=build_default_providers(settings),
+            )
         return await bot.send(response)
 else:
     live_sv = None

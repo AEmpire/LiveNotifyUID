@@ -2,11 +2,26 @@ import pytest
 
 from LiveNotifyUID.config import LiveNotifySettings
 from LiveNotifyUID.commands import (
+    LIVE_COMMAND_TRIGGER,
     build_command_response,
+    execute_live_command,
     normalize_live_handler_text,
     _should_swallow_optional_gscore_import_error,
     parse_live_command,
 )
+from LiveNotifyUID.types import LiveState, LiveStatus, Platform
+
+
+class FakeProvider:
+    def __init__(self, status: LiveStatus):
+        self.status = status
+        self.checked: list[str] = []
+
+    async def check_channel(
+        self, external_id: str, *, timeout_seconds: float
+    ) -> LiveStatus:
+        self.checked.append(external_id)
+        return self.status
 
 
 def test_parse_add_bilibili_command():
@@ -105,6 +120,24 @@ def test_normalize_live_handler_text_rejects_prefix_like_command_matches():
     assert normalize_live_handler_text("liveXYZ") is None
 
 
+def test_normalize_live_handler_text_rejects_empty_trigger_prefix_collisions():
+    assert (
+        normalize_live_handler_text(
+            "add bili 12345 主播A",
+            raw_text="live add bili 12345 主播A",
+        )
+        == "add bili 12345 主播A"
+    )
+    assert (
+        normalize_live_handler_text("add bili 12345", raw_text="liveadd bili 12345")
+        is None
+    )
+
+
+def test_gscore_force_prefix_uses_base_live_command_trigger():
+    assert LIVE_COMMAND_TRIGGER == ""
+
+
 def test_build_command_response_adds_and_lists_subscription(session):
     response = build_command_response(
         session,
@@ -167,6 +200,72 @@ def test_build_command_response_checks_subscription_status(session):
     assert "平台：bili" in checked
     assert "目标：主播A" in checked
     assert "状态：unknown" in checked
+
+
+@pytest.mark.asyncio
+async def test_execute_live_command_add_performs_initial_check_without_notification(
+    session,
+):
+    settings = LiveNotifySettings()
+    provider = FakeProvider(
+        LiveStatus(
+            platform=Platform.BILI,
+            external_id="12345",
+            state=LiveState.LIVE,
+            live_id="678:2026-05-25 01:00:00",
+            title="Bili Live",
+            room_url="https://live.bilibili.com/678",
+        )
+    )
+
+    response = await execute_live_command(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        settings,
+        providers={Platform.BILI: provider},
+    )
+    listed = build_command_response(
+        session,
+        parse_live_command("list"),
+        settings,
+    )
+
+    assert response == "已添加直播监听 #1: bili 12345\n初始状态：live"
+    assert provider.checked == ["12345"]
+    assert "#1 bili 主播A 启用，状态 live" in listed
+
+
+@pytest.mark.asyncio
+async def test_execute_live_command_check_fetches_current_status_without_notification(
+    session,
+):
+    settings = LiveNotifySettings()
+    build_command_response(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        settings,
+    )
+    provider = FakeProvider(
+        LiveStatus(
+            platform=Platform.BILI,
+            external_id="12345",
+            state=LiveState.LIVE,
+            live_id="678:2026-05-25 01:00:00",
+            title="Bili Live",
+        )
+    )
+
+    checked = await execute_live_command(
+        session,
+        parse_live_command("check 1"),
+        settings,
+        providers={Platform.BILI: provider},
+    )
+
+    assert provider.checked == ["12345"]
+    assert "直播监听 #1" in checked
+    assert "状态：live" in checked
+    assert "最近直播：Bili Live" in checked
 
 
 def test_build_command_response_reports_status(session):

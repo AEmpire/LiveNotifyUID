@@ -30,6 +30,16 @@ class FakeProvider:
         return self.status
 
 
+class QueueProvider:
+    def __init__(self, statuses: list[LiveStatus]):
+        self.statuses = statuses
+
+    async def check_channel(
+        self, external_id: str, *, timeout_seconds: float
+    ) -> LiveStatus:
+        return self.statuses.pop(0)
+
+
 class FakeNotifier:
     def __init__(self):
         self.sent: list[LiveStatus] = []
@@ -130,6 +140,71 @@ async def test_run_poll_once_notifies_offline_to_live(session):
     assert updated.last_live_id == "1"
     assert updated.last_live_title == "Live"
     assert updated.last_notified_live_id == "1"
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_notifies_second_bilibili_session_in_same_room(session):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.BILI, external_id="123", display_name="主播"
+    )
+    first_live = LiveStatus(
+        platform=Platform.BILI,
+        external_id="123",
+        state=LiveState.LIVE,
+        live_id="678:2026-05-25 01:00:00",
+        title="First Live",
+    )
+    offline = LiveStatus(
+        platform=Platform.BILI,
+        external_id="123",
+        state=LiveState.OFFLINE,
+    )
+    second_live = LiveStatus(
+        platform=Platform.BILI,
+        external_id="123",
+        state=LiveState.LIVE,
+        live_id="678:2026-05-26 01:00:00",
+        title="Second Live",
+    )
+    notifier = FakeNotifier()
+    provider = QueueProvider([first_live, offline, second_live])
+    settings = LiveNotifySettings(discord_channel_id="discord")
+    first_run_at = datetime(2026, 5, 25, 1, tzinfo=timezone.utc)
+
+    repo.mark_checked(
+        subscription.id,
+        checked_at=first_run_at - timedelta(minutes=1),
+        state=LiveState.OFFLINE,
+    )
+    await run_poll_once(
+        repo=repo,
+        settings=settings,
+        providers={Platform.BILI: provider},
+        send=notifier.send,
+        now=first_run_at,
+    )
+    await run_poll_once(
+        repo=repo,
+        settings=settings,
+        providers={Platform.BILI: provider},
+        send=notifier.send,
+        now=first_run_at + timedelta(minutes=1),
+    )
+    await run_poll_once(
+        repo=repo,
+        settings=settings,
+        providers={Platform.BILI: provider},
+        send=notifier.send,
+        now=first_run_at + timedelta(minutes=2),
+    )
+
+    updated = repo.get(subscription.id)
+    assert [status.live_id for status in notifier.sent] == [
+        "678:2026-05-25 01:00:00",
+        "678:2026-05-26 01:00:00",
+    ]
+    assert updated.last_notified_live_id == "678:2026-05-26 01:00:00"
 
 
 @pytest.mark.asyncio

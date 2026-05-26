@@ -10,11 +10,23 @@ from LiveNotifyUID.types import LiveState, LiveStatus, Platform
 
 class BilibiliProvider:
     ENDPOINT = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://live.bilibili.com/",
+    }
 
     async def check_channel(self, external_id: str, timeout_seconds: float) -> LiveStatus:
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                response = await client.get(self.ENDPOINT, params={"uids[]": external_id})
+                response = await client.get(
+                    self.ENDPOINT,
+                    params={"uids[]": external_id},
+                    headers=self.HEADERS,
+                )
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPStatusError as exc:
@@ -56,8 +68,9 @@ class BilibiliProvider:
 
     def _live_status(self, external_id: str, raw: dict[str, Any]) -> LiveStatus:
         room_id = raw.get("room_id")
-        live_id = str(room_id) if room_id is not None else None
-        room_url = f"https://live.bilibili.com/{live_id}" if live_id else None
+        room_id_text = _string_or_none(room_id)
+        live_id = _bilibili_live_id(room_id_text, raw)
+        room_url = f"https://live.bilibili.com/{room_id_text}" if room_id_text else None
 
         return LiveStatus(
             platform=Platform.BILI,
@@ -76,3 +89,15 @@ def _string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _bilibili_live_id(room_id: str | None, raw: dict[str, Any]) -> str | None:
+    if room_id is None:
+        return None
+
+    for key in ("live_time", "live_id"):
+        value = _string_or_none(raw.get(key))
+        if value:
+            return f"{room_id}:{value}"
+
+    return room_id

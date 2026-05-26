@@ -43,6 +43,34 @@ async def test_bilibili_live_response():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_bilibili_live_response_uses_live_time_as_session_id():
+    route = respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 1,
+                        "room_id": 678,
+                        "live_time": "2026-05-25 01:00:00",
+                        "title": "Bili Live",
+                        "uname": "主播A",
+                    }
+                },
+            },
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.live_id == "678:2026-05-25 01:00:00"
+    assert route.calls.last.request.headers["referer"] == "https://live.bilibili.com/"
+    assert "Mozilla/" in route.calls.last.request.headers["user-agent"]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_bilibili_live_response_uses_keyframe_as_cover_fallback():
     respx.get(BILIBILI_ENDPOINT).mock(
         return_value=httpx.Response(

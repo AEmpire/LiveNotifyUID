@@ -1,6 +1,12 @@
+def _should_swallow_optional_runtime_import_error(exc: BaseException) -> bool:
+    return isinstance(exc, ModuleNotFoundError) and exc.name == "gsuid_core"
+
+
 try:
     from gsuid_core.sv import Plugins
-except ImportError:
+except ModuleNotFoundError as exc:
+    if not _should_swallow_optional_runtime_import_error(exc):
+        raise
     Plugins = None
 else:
     Plugins(
@@ -14,6 +20,7 @@ else:
     try:
         from . import commands as commands  # noqa: F401
         from . import scheduler as scheduler  # noqa: F401
-    except ImportError:
+    except ModuleNotFoundError as exc:
         # Local unit tests can import the package without a full GsCore runtime.
-        pass
+        if not _should_swallow_optional_runtime_import_error(exc):
+            raise
