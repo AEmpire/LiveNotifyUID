@@ -5,12 +5,27 @@ from typing import Any
 from .types import Platform, LiveStatus
 
 
-def platform_label(platform: Platform) -> str:
-    if platform is Platform.BILI:
+class UnsupportedRichMessageError(Exception):
+    """Raised by bot adapters that cannot send rich notification payloads."""
+
+
+def _platform_value(platform: Platform | str) -> str:
+    if isinstance(platform, Platform):
+        return platform.value
+    return str(platform)
+
+
+def platform_label(platform: Platform | str) -> str:
+    platform_value = _platform_value(platform)
+    if platform_value == Platform.BILI.value:
         return "B站"
-    if platform is Platform.YOUTUBE:
+    if platform_value == Platform.YOUTUBE.value:
         return "YouTube"
-    return str(platform.value)
+    return platform_value
+
+
+def _uses_bili_name_label(platform: Platform | str) -> bool:
+    return _platform_value(platform) == Platform.BILI.value
 
 
 def _display_name(status: LiveStatus) -> str:
@@ -23,7 +38,7 @@ def _title(status: LiveStatus) -> str:
 
 def build_plain_text(status: LiveStatus) -> str:
     label = platform_label(status.platform)
-    name_label = "主播" if status.platform is Platform.BILI else "频道"
+    name_label = "主播" if _uses_bili_name_label(status.platform) else "频道"
 
     lines = [
         f"【{label}直播开播】",
@@ -74,7 +89,10 @@ async def send_notification(
     if embed_enabled:
         try:
             return await bot.send_to_channel(channel_id, build_embed_payload(status))
-        except (AttributeError, TypeError, ValueError):
+        except UnsupportedRichMessageError:
             pass
+        except TypeError as exc:
+            if exc.args != ("rich message unsupported",):
+                raise
 
     return await bot.send_to_channel(channel_id, build_plain_text(status))

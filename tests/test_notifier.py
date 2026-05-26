@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 import pytest
 
 from LiveNotifyUID.notifier import (
+    UnsupportedRichMessageError,
     build_embed_payload,
     build_plain_text,
+    platform_label,
     send_notification,
 )
 from LiveNotifyUID.types import LiveState, LiveStatus, Platform
@@ -41,6 +43,27 @@ def test_build_plain_text_youtube_uses_channel_label():
     assert "【YouTube直播开播】" in text
     assert "频道：Channel" in text
     assert "主播：" not in text
+
+
+def test_build_plain_text_accepts_raw_string_platform():
+    status = LiveStatus(
+        platform="bili",
+        external_id="123",
+        state=LiveState.LIVE,
+        title="Live",
+        display_name="主播",
+    )
+
+    text = build_plain_text(status)
+
+    assert "【B站直播开播】" in text
+    assert "主播：主播" in text
+
+
+def test_platform_label_accepts_raw_and_unknown_values():
+    assert platform_label("youtube") == "YouTube"
+    assert platform_label("bili") == "B站"
+    assert platform_label("twitch") == "twitch"
 
 
 def test_build_embed_payload_contains_discord_fields():
@@ -117,6 +140,46 @@ async def test_send_notification_falls_back_to_text():
     assert len(calls) == 2
     assert calls[-1][0] == "123"
     assert isinstance(calls[-1][1], str)
+
+
+@pytest.mark.asyncio
+async def test_send_notification_falls_back_for_unsupported_rich_error():
+    calls = []
+
+    class Bot:
+        async def send_to_channel(self, channel_id, message):
+            calls.append((channel_id, message))
+            if isinstance(message, dict):
+                raise UnsupportedRichMessageError("adapter cannot send embeds")
+
+    status = LiveStatus(
+        platform=Platform.YOUTUBE,
+        external_id="UC1",
+        state=LiveState.LIVE,
+        title="Live",
+    )
+
+    await send_notification(Bot(), channel_id="123", status=status, embed_enabled=True)
+
+    assert len(calls) == 2
+    assert isinstance(calls[-1][1], str)
+
+
+@pytest.mark.asyncio
+async def test_send_notification_propagates_unrelated_send_failure():
+    class Bot:
+        async def send_to_channel(self, channel_id, message):
+            raise TypeError("channel_id must be int")
+
+    status = LiveStatus(
+        platform=Platform.YOUTUBE,
+        external_id="UC1",
+        state=LiveState.LIVE,
+        title="Live",
+    )
+
+    with pytest.raises(TypeError, match="channel_id must be int"):
+        await send_notification(Bot(), channel_id="123", status=status, embed_enabled=True)
 
 
 @pytest.mark.asyncio
