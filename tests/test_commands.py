@@ -1,6 +1,9 @@
 import pytest
 
+from LiveNotifyUID.config import LiveNotifySettings
 from LiveNotifyUID.commands import (
+    build_command_response,
+    normalize_live_handler_text,
     _should_swallow_optional_gscore_import_error,
     parse_live_command,
 )
@@ -92,3 +95,89 @@ def test_optional_gscore_import_guard_reraises_submodule_errors():
             raise error
 
     assert raised.value.name == "gsuid_core.bot"
+
+
+def test_normalize_live_handler_text_rejects_prefix_like_command_matches():
+    assert normalize_live_handler_text("add bili 12345 主播A") == "add bili 12345 主播A"
+    assert normalize_live_handler_text("live add bili 12345 主播A") == "add bili 12345 主播A"
+    assert normalize_live_handler_text(" live   list ") == "list"
+    assert normalize_live_handler_text("liveadd bili 12345") is None
+    assert normalize_live_handler_text("liveXYZ") is None
+
+
+def test_build_command_response_adds_and_lists_subscription(session):
+    response = build_command_response(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        LiveNotifySettings(),
+    )
+    listed = build_command_response(
+        session,
+        parse_live_command("list"),
+        LiveNotifySettings(),
+    )
+
+    assert response == "已添加直播监听 #1: bili 12345"
+    assert "#1 bili 主播A 启用，状态 unknown" in listed
+
+
+def test_build_command_response_rolls_back_duplicate_add(session):
+    settings = LiveNotifySettings()
+    parsed = parse_live_command("add youtube UC1 Channel")
+
+    build_command_response(session, parsed, settings)
+    duplicate = build_command_response(session, parsed, settings)
+    listed = build_command_response(session, parse_live_command("list"), settings)
+
+    assert duplicate == "该直播监听已存在"
+    assert listed.count("youtube") == 1
+
+
+def test_build_command_response_removes_subscription(session):
+    settings = LiveNotifySettings()
+    added = build_command_response(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        settings,
+    )
+    subscription_id = int(added.split("#", 1)[1].split(":", 1)[0])
+
+    removed = build_command_response(
+        session,
+        parse_live_command(f"remove {subscription_id}"),
+        settings,
+    )
+    listed = build_command_response(session, parse_live_command("list"), settings)
+
+    assert removed == "已删除直播监听"
+    assert listed == "当前没有直播监听"
+
+
+def test_build_command_response_checks_subscription_status(session):
+    settings = LiveNotifySettings()
+    build_command_response(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        settings,
+    )
+
+    checked = build_command_response(session, parse_live_command("check 1"), settings)
+
+    assert "直播监听 #1" in checked
+    assert "平台：bili" in checked
+    assert "目标：主播A" in checked
+    assert "状态：unknown" in checked
+
+
+def test_build_command_response_reports_status(session):
+    settings = LiveNotifySettings(youtube_api_key="token")
+    build_command_response(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        settings,
+    )
+    build_command_response(session, parse_live_command("disable 1"), settings)
+
+    response = build_command_response(session, parse_live_command("status"), settings)
+
+    assert response == "直播监听状态：总数 1，启用 0，失败 0，YouTube API Key 已配置"

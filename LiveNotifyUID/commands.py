@@ -4,11 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
+from .config import LiveNotifySettings
 from .database import LiveSubscription, SubscriptionRepository
 from .types import Platform
+
+_live_notify_engine: Engine | None = None
+_live_notify_engine_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -46,6 +51,20 @@ def parse_live_command(text: str) -> ParsedCommand:
     return ParsedCommand(action="invalid")
 
 
+def normalize_live_handler_text(text: str | None) -> str | None:
+    stripped = (text or "").strip()
+    lowered = stripped.lower()
+    command = "live"
+
+    if lowered == command:
+        return ""
+    if lowered.startswith(command):
+        if len(stripped) > len(command) and stripped[len(command)].isspace():
+            return stripped[len(command) :].strip()
+        return None
+    return stripped
+
+
 def format_help() -> str:
     return "\n".join(
         [
@@ -65,6 +84,21 @@ def _live_notify_db_path(get_res_path: Callable[[str], Path]) -> Path:
     resource_dir = Path(get_res_path("LiveNotifyUID"))
     resource_dir.mkdir(parents=True, exist_ok=True)
     return resource_dir / "live_notify.db"
+
+
+def _get_live_notify_engine(get_res_path: Callable[[str], Path]) -> Engine:
+    global _live_notify_engine
+    global _live_notify_engine_path
+
+    db_path = _live_notify_db_path(get_res_path)
+    if _live_notify_engine is None or _live_notify_engine_path != db_path:
+        _live_notify_engine = create_engine(f"sqlite:///{db_path}")
+        _live_notify_engine_path = db_path
+        SQLModel.metadata.create_all(
+            _live_notify_engine,
+            tables=[LiveSubscription.__table__],
+        )
+    return _live_notify_engine
 
 
 def _format_subscription(row: LiveSubscription) -> str:
@@ -95,6 +129,76 @@ def _should_swallow_optional_gscore_import_error(exc: ModuleNotFoundError) -> bo
     return exc.name == "gsuid_core"
 
 
+def build_command_response(
+    session: Session,
+    parsed: ParsedCommand,
+    settings: LiveNotifySettings,
+) -> str:
+    if parsed.action in {"help", "invalid"}:
+        return format_help()
+
+    repo = SubscriptionRepository(session)
+
+    if parsed.action == "add":
+        if parsed.platform not in {Platform.BILI.value, Platform.YOUTUBE.value}:
+            return "不支持的平台，请使用 bili 或 youtube。"
+        if parsed.external_id is None:
+            return format_help()
+
+        try:
+            subscription = repo.create_subscription(
+                platform=Platform(parsed.platform),
+                external_id=parsed.external_id,
+                display_name=parsed.display_name,
+            )
+        except IntegrityError:
+            session.rollback()
+            return "该直播监听已存在"
+        return (
+            "已添加直播监听 "
+            f"#{subscription.id}: {subscription.platform} {subscription.external_id}"
+        )
+
+    if parsed.action == "remove" and parsed.subscription_id is not None:
+        removed = repo.delete(parsed.subscription_id)
+        return "已删除直播监听" if removed else "未找到该直播监听"
+
+    if parsed.action in {"enable", "disable"} and parsed.subscription_id is not None:
+        try:
+            repo.set_enabled(
+                parsed.subscription_id,
+                parsed.action == "enable",
+            )
+        except ValueError:
+            return "未找到该直播监听"
+        return "已启用直播监听" if parsed.action == "enable" else "已停用直播监听"
+
+    if parsed.action == "check" and parsed.subscription_id is not None:
+        row = repo.get(parsed.subscription_id)
+        if row is None:
+            return "未找到该直播监听"
+        return _format_subscription_detail(row)
+
+    if parsed.action == "list":
+        rows = repo.list_all()
+        if not rows:
+            return "当前没有直播监听"
+        return "\n".join(_format_subscription(row) for row in rows)
+
+    if parsed.action == "status":
+        rows = repo.list_all()
+        enabled = sum(1 for row in rows if row.enabled)
+        failed = sum(1 for row in rows if row.failure_count > 0)
+        youtube = "已配置" if settings.youtube_api_key else "未配置"
+        return (
+            "直播监听状态："
+            f"总数 {len(rows)}，启用 {enabled}，失败 {failed}，"
+            f"YouTube API Key {youtube}"
+        )
+
+    return format_help()
+
+
 try:
     from gsuid_core.bot import Bot
     from gsuid_core.data_store import get_res_path
@@ -115,85 +219,19 @@ if SV is not None and get_res_path is not None:
     live_sv = SV("直播监听管理", pm=3)
 
     def open_repo() -> Session:
-        db_path = _live_notify_db_path(get_res_path)
-        engine = create_engine(f"sqlite:///{db_path}")
-        SQLModel.metadata.create_all(engine, tables=[LiveSubscription.__table__])
-        return Session(engine)
+        return Session(_get_live_notify_engine(get_res_path))
 
     @live_sv.on_command("live", block=True)
     async def handle_live_command(bot: Bot, ev: Event):
-        parsed = parse_live_command(getattr(ev, "text", ""))
-        if parsed.action in {"help", "invalid"}:
-            return await bot.send(format_help())
-
+        normalized = normalize_live_handler_text(getattr(ev, "text", ""))
+        parsed = (
+            ParsedCommand(action="invalid")
+            if normalized is None
+            else parse_live_command(normalized)
+        )
+        settings = get_settings()
         with open_repo() as session:
-            repo = SubscriptionRepository(session)
-
-            if parsed.action == "add":
-                if parsed.platform not in {Platform.BILI.value, Platform.YOUTUBE.value}:
-                    return await bot.send("不支持的平台，请使用 bili 或 youtube。")
-                if parsed.external_id is None:
-                    return await bot.send(format_help())
-
-                try:
-                    subscription = repo.create_subscription(
-                        platform=Platform(parsed.platform),
-                        external_id=parsed.external_id,
-                        display_name=parsed.display_name,
-                    )
-                except IntegrityError:
-                    return await bot.send("该直播监听已存在")
-                return await bot.send(
-                    "已添加直播监听 "
-                    f"#{subscription.id}: {subscription.platform} "
-                    f"{subscription.external_id}"
-                )
-
-            if parsed.action == "remove" and parsed.subscription_id is not None:
-                removed = repo.delete(parsed.subscription_id)
-                return await bot.send("已删除直播监听" if removed else "未找到该直播监听")
-
-            if (
-                parsed.action in {"enable", "disable"}
-                and parsed.subscription_id is not None
-            ):
-                try:
-                    repo.set_enabled(
-                        parsed.subscription_id,
-                        parsed.action == "enable",
-                    )
-                except ValueError:
-                    return await bot.send("未找到该直播监听")
-                return await bot.send(
-                    "已启用直播监听" if parsed.action == "enable" else "已停用直播监听"
-                )
-
-            if parsed.action == "check" and parsed.subscription_id is not None:
-                row = repo.get(parsed.subscription_id)
-                if row is None:
-                    return await bot.send("未找到该直播监听")
-                return await bot.send(_format_subscription_detail(row))
-
-            if parsed.action == "list":
-                rows = repo.list_all()
-                if not rows:
-                    return await bot.send("当前没有直播监听")
-                return await bot.send(
-                    "\n".join(_format_subscription(row) for row in rows)
-                )
-
-            if parsed.action == "status":
-                rows = repo.list_all()
-                enabled = sum(1 for row in rows if row.enabled)
-                failed = sum(1 for row in rows if row.failure_count > 0)
-                settings = get_settings()
-                youtube = "已配置" if settings.youtube_api_key else "未配置"
-                return await bot.send(
-                    "直播监听状态："
-                    f"总数 {len(rows)}，启用 {enabled}，失败 {failed}，"
-                    f"YouTube API Key {youtube}"
-                )
-
-        return await bot.send(format_help())
+            response = build_command_response(session, parsed, settings)
+        return await bot.send(response)
 else:
     live_sv = None
