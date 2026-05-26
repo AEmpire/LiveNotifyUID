@@ -27,19 +27,20 @@ class LiveSubscription(SQLModel, table=True):
     __tablename__ = "live_subscriptions"
     __table_args__ = (
         UniqueConstraint("platform", "external_id", name="uq_live_subscription_target"),
+        {"extend_existing": True},
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    platform: str = Field(index=True)
-    external_id: str = Field(index=True)
+    platform: str
+    external_id: str
     display_name: str | None = None
     room_url: str | None = None
     enabled: bool = True
-    last_state: str = Field(default=LiveState.UNKNOWN.value, index=True)
+    last_state: str = Field(default=LiveState.UNKNOWN.value)
     last_live_id: str | None = None
     last_live_title: str | None = None
     last_notified_live_id: str | None = None
-    last_checked_at: datetime | None = Field(default=None, index=True)
+    last_checked_at: datetime | None = None
     last_notified_at: datetime | None = None
     failure_count: int = 0
     last_error: str | None = None

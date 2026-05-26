@@ -160,3 +160,30 @@ print(json.dumps({
             "alias": ["livenotify", "直播监听"],
         }
     ]
+
+
+def test_database_can_be_imported_from_root_and_inner_package_paths():
+    import LiveNotifyUID.database as root_database
+    import LiveNotifyUID.types as root_types
+    import importlib.util
+    import types
+
+    database_path = Path(root_database.__file__)
+    package_name = "DuplicateLiveNotifyUID"
+    duplicate_package = types.ModuleType(package_name)
+    duplicate_package.__path__ = [str(database_path.parent)]
+    sys.modules[package_name] = duplicate_package
+    sys.modules[f"{package_name}.types"] = root_types
+
+    spec = importlib.util.spec_from_file_location(
+        f"{package_name}.database",
+        database_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    duplicate_database = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = duplicate_database
+    spec.loader.exec_module(duplicate_database)
+
+    assert duplicate_database.LiveSubscription.__tablename__ == "live_subscriptions"
+    assert root_database.LiveSubscription.__tablename__ == "live_subscriptions"
