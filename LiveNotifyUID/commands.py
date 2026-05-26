@@ -60,27 +60,28 @@ def normalize_live_handler_text(
     *,
     raw_text: str | None = None,
 ) -> str | None:
+    commands = ("live", "/live")
     if raw_text is not None:
         stripped_raw = raw_text.strip()
         lowered_raw = stripped_raw.lower()
-        command = "live"
-        if (
-            lowered_raw.startswith(command)
-            and len(stripped_raw) > len(command)
-            and not stripped_raw[len(command)].isspace()
-        ):
-            return None
+        for command in commands:
+            if lowered_raw.startswith(command):
+                if len(stripped_raw) == len(command):
+                    break
+                if not stripped_raw[len(command)].isspace():
+                    return None
+                break
 
     stripped = (text or "").strip()
     lowered = stripped.lower()
-    command = "live"
 
-    if lowered == command:
-        return ""
-    if lowered.startswith(command):
-        if len(stripped) > len(command) and stripped[len(command)].isspace():
-            return stripped[len(command) :].strip()
-        return None
+    for command in commands:
+        if lowered == command:
+            return ""
+        if lowered.startswith(command):
+            if len(stripped) > len(command) and stripped[len(command)].isspace():
+                return stripped[len(command) :].strip()
+            return None
     return stripped
 
 

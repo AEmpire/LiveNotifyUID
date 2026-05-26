@@ -115,8 +115,10 @@ def test_optional_gscore_import_guard_reraises_submodule_errors():
 def test_normalize_live_handler_text_rejects_prefix_like_command_matches():
     assert normalize_live_handler_text("add bili 12345 主播A") == "add bili 12345 主播A"
     assert normalize_live_handler_text("live add bili 12345 主播A") == "add bili 12345 主播A"
+    assert normalize_live_handler_text("/live status") == "status"
     assert normalize_live_handler_text(" live   list ") == "list"
     assert normalize_live_handler_text("liveadd bili 12345") is None
+    assert normalize_live_handler_text("/liveadd bili 12345") is None
     assert normalize_live_handler_text("liveXYZ") is None
 
 
@@ -128,8 +130,13 @@ def test_normalize_live_handler_text_rejects_empty_trigger_prefix_collisions():
         )
         == "add bili 12345 主播A"
     )
+    assert normalize_live_handler_text("status", raw_text="/live status") == "status"
     assert (
         normalize_live_handler_text("add bili 12345", raw_text="liveadd bili 12345")
+        is None
+    )
+    assert (
+        normalize_live_handler_text("add bili 12345", raw_text="/liveadd bili 12345")
         is None
     )
 

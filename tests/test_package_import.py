@@ -155,7 +155,7 @@ print(json.dumps({
         {
             "name": "LiveNotifyUID",
             "pm": 3,
-            "force_prefix": ["live"],
+            "force_prefix": ["live", "/live"],
             "allow_empty_prefix": False,
             "alias": ["livenotify", "直播监听"],
         }

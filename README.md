@@ -29,6 +29,8 @@ The same values are stored in `gsuid_core/data/LiveNotifyUID/config.json`.
 
 ## Commands
 
+Both `live ...` and `/live ...` are accepted by the plugin prefix.
+
 - `/live add bili <uid> [display_name]`
 - `/live add youtube <channel_id> [display_name]`
 - `/live remove <id>`
