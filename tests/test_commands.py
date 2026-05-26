@@ -1,4 +1,9 @@
-from LiveNotifyUID.commands import parse_live_command
+import pytest
+
+from LiveNotifyUID.commands import (
+    _should_swallow_optional_gscore_import_error,
+    parse_live_command,
+)
 
 
 def test_parse_add_bilibili_command():
@@ -61,3 +66,29 @@ def test_enable_disable_check_parse_ids():
     assert disabled.subscription_id == 2
     assert checked.action == "check"
     assert checked.subscription_id == 3
+
+
+def test_optional_gscore_import_guard_only_swallows_missing_root_package():
+    assert _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="gsuid_core")
+    )
+
+    assert not _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="gsuid_core.bot")
+    )
+    assert not _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="gsuid_core.data_store")
+    )
+    assert not _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="other_package")
+    )
+
+
+def test_optional_gscore_import_guard_reraises_submodule_errors():
+    error = ModuleNotFoundError(name="gsuid_core.bot")
+
+    with pytest.raises(ModuleNotFoundError) as raised:
+        if not _should_swallow_optional_gscore_import_error(error):
+            raise error
+
+    assert raised.value.name == "gsuid_core.bot"

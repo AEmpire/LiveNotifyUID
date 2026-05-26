@@ -91,13 +91,17 @@ def _format_subscription_detail(row: LiveSubscription) -> str:
     return "\n".join(lines)
 
 
+def _should_swallow_optional_gscore_import_error(exc: ModuleNotFoundError) -> bool:
+    return exc.name == "gsuid_core"
+
+
 try:
     from gsuid_core.bot import Bot
     from gsuid_core.data_store import get_res_path
     from gsuid_core.models import Event
     from gsuid_core.sv import SV
 except ModuleNotFoundError as exc:
-    if exc.name and exc.name.split(".")[0] != "gsuid_core":
+    if not _should_swallow_optional_gscore_import_error(exc):
         raise
     Bot = None  # type: ignore[assignment]
     Event = None  # type: ignore[assignment]
