@@ -154,7 +154,7 @@ print(json.dumps({
     assert imported["registrations"] == [
         {
             "name": "LiveNotifyUID",
-            "pm": 3,
+            "pm": 6,
             "force_prefix": ["live", "/live"],
             "allow_empty_prefix": False,
             "alias": ["livenotify", "直播监听"],

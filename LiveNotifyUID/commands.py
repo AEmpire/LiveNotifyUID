@@ -350,7 +350,7 @@ if SV is not None and get_res_path is not None:
     from .config import get_settings
     from .scheduler import build_default_providers
 
-    live_sv = SV("直播监听管理", pm=3)
+    live_sv = SV("直播监听管理", pm=6)
 
     def open_repo() -> Session:
         return Session(_get_live_notify_engine(get_res_path))
