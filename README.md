@@ -40,6 +40,20 @@ Both `live ...` and `/live ...` are accepted by the plugin prefix.
 - `/live check <id>`
 - `/live status`
 
+## Optional Discord Slash Bridge
+
+`integrations/nonebot_live_notify_slash.py` can be copied into a
+NoneBot Discord project and loaded as a plugin. It registers a Discord
+`/live` slash command and writes to the same
+`gsuid_core/data/LiveNotifyUID/live_notify.db` database used by the GsCore
+plugin.
+
+Required NoneBot environment:
+
+- `nonebot-adapter-discord`
+- `sqlmodel`
+- `application_commands` configured for the target Discord guild
+
 ## Notification Behavior
 
 The plugin only sends a notification on `offline -> live`. On first startup, already-live channels are recorded without notification unless `notify_on_startup_live` is enabled.
