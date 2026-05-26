@@ -4,9 +4,14 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
-from .config import LiveNotifySettings
+from sqlmodel import Session, SQLModel, create_engine
+
+from .config import LiveNotifySettings, get_settings
 from .database import LiveSubscription, SubscriptionRepository
+from .notifier import send_notification
 from .providers import BilibiliProvider, LiveProvider, YouTubeProvider
 from .state_machine import TransitionDecision, decide_transition
 from .types import LiveState, LiveStatus, Platform
@@ -137,17 +142,90 @@ def _live_state(value: str) -> LiveState:
         return LiveState.UNKNOWN
 
 
+class GsCoreBotAdapter:
+    def __init__(self, gss: Any) -> None:
+        self.gss = gss
+
+    async def send_to_channel(self, channel_id: str, message: Any) -> None:
+        if not self.gss.active_bot:
+            raise RuntimeError("no active bot connection")
+
+        bot = next(iter(self.gss.active_bot.values()))
+        await bot.target_send(
+            message,
+            "channel",
+            str(channel_id),
+            "",
+            "",
+            "",
+            False,
+            "",
+        )
+
+
+def _live_notify_db_path(get_res_path: Callable[[str], Path]) -> Path:
+    resource_dir = Path(get_res_path("LiveNotifyUID"))
+    resource_dir.mkdir(parents=True, exist_ok=True)
+    return resource_dir / "live_notify.db"
+
+
+async def poll_from_gscore() -> None:
+    try:
+        from gsuid_core.data_store import get_res_path
+        from gsuid_core.gss import gss
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".")[0] == "gsuid_core":
+            raise RuntimeError("GsCore is required for poll_from_gscore") from exc
+        raise
+
+    settings = get_settings()
+    db_path = _live_notify_db_path(get_res_path)
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine, tables=[LiveSubscription.__table__])
+
+    with Session(engine) as session:
+        repo = SubscriptionRepository(session)
+        bot = GsCoreBotAdapter(gss)
+
+        await run_poll_once(
+            repo,
+            settings,
+            build_default_providers(settings),
+            lambda status: send_notification(
+                bot,
+                channel_id=settings.discord_channel_id,
+                status=status,
+                embed_enabled=settings.embed_enabled,
+            ),
+        )
+
+
 try:
-    from gsuid_core.sv import SV
+    from gsuid_core.aps import scheduler
+    from gsuid_core.server import on_core_start
 except (ImportError, ModuleNotFoundError) as exc:
     if isinstance(exc, ModuleNotFoundError) and exc.name:
         missing_root = exc.name.split(".")[0]
         if missing_root != "gsuid_core":
             raise
-    SV = None  # type: ignore[assignment]
+    scheduler = None  # type: ignore[assignment]
+    on_core_start = None  # type: ignore[assignment]
 
 
-if SV is not None:
-    live_notify_scheduler = SV("LiveNotifyUIDScheduler")
+if scheduler is not None and on_core_start is not None:
+
+    @on_core_start
+    async def start_live_notify_scheduler() -> None:
+        settings = get_settings()
+        scheduler.add_job(
+            poll_from_gscore,
+            trigger="interval",
+            seconds=settings.poll_interval_seconds,
+            id="LiveNotifyUID.poll",
+            replace_existing=True,
+        )
+
+    live_notify_scheduler_registered = True
 else:
-    live_notify_scheduler = None
+    # GsCore is absent under local unit tests; the core polling API remains usable.
+    live_notify_scheduler_registered = False

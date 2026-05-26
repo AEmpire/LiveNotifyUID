@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +10,13 @@ from LiveNotifyUID.config import LiveNotifySettings
 from LiveNotifyUID.database import SubscriptionRepository
 from LiveNotifyUID.scheduler import run_poll_once
 from LiveNotifyUID.types import LiveState, LiveStatus, Platform
+
+
+def test_scheduler_imports_without_gscore():
+    scheduler = importlib.import_module("LiveNotifyUID.scheduler")
+
+    assert scheduler.poll_from_gscore is not None
+    assert scheduler.live_notify_scheduler_registered is False
 
 
 class FakeProvider:
