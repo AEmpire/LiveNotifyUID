@@ -345,6 +345,7 @@ async def _refresh_subscription_status(
         state=status.state,
         live_id=status.live_id,
         live_title=status.title,
+        display_name=status.display_name,
         room_url=status.room_url,
     )
     return status, None

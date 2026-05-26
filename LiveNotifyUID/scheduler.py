@@ -119,6 +119,7 @@ async def _check_subscription(
         state=status.state,
         live_id=status.live_id,
         live_title=status.title,
+        display_name=status.display_name,
         room_url=status.room_url,
     )
 

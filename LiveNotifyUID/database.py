@@ -120,6 +120,7 @@ class SubscriptionRepository:
         state: LiveState,
         live_id: str | None = None,
         live_title: str | None = None,
+        display_name: str | None = None,
         room_url: str | None = None,
     ) -> LiveSubscription:
         subscription = self._require(subscription_id)
@@ -128,6 +129,8 @@ class SubscriptionRepository:
         subscription.last_state = state.value
         subscription.last_live_id = live_id
         subscription.last_live_title = live_title
+        if display_name is not None and not subscription.display_name:
+            subscription.display_name = display_name
         if room_url is not None:
             subscription.room_url = room_url
         subscription.failure_count = 0

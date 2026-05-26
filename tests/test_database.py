@@ -165,6 +165,42 @@ def test_mark_notified_records_live_id_and_time(session):
     assert notified.updated_at == to_naive_utc(notified_at)
 
 
+def test_mark_checked_backfills_missing_display_name(session):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.BILI,
+        external_id="12345",
+        display_name=None,
+    )
+
+    checked = repo.mark_checked(
+        subscription.id,
+        checked_at=datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc),
+        state=LiveState.OFFLINE,
+        display_name="主播A",
+    )
+
+    assert checked.display_name == "主播A"
+
+
+def test_mark_checked_keeps_custom_display_name(session):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.BILI,
+        external_id="12345",
+        display_name="我的备注",
+    )
+
+    checked = repo.mark_checked(
+        subscription.id,
+        checked_at=datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc),
+        state=LiveState.OFFLINE,
+        display_name="接口名称",
+    )
+
+    assert checked.display_name == "我的备注"
+
+
 def test_delete_removes_subscription_and_reports_missing(session):
     repo = SubscriptionRepository(session)
     subscription = repo.create_subscription(
