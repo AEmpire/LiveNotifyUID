@@ -17,7 +17,15 @@ Clone this repository into `gsuid_core/plugins/LiveNotifyUID`, install the runti
 
 ## Configure
 
-Set `youtube_api_key`, `discord_channel_id`, polling options, and notification options in the plugin config.
+Open the GsCore WebConsole or configuration terminal, find the `LiveNotifyUID`
+plugin config, and set:
+
+- `youtube_api_key`
+- `discord_channel_id`
+- polling options
+- notification options
+
+The same values are stored in `gsuid_core/data/LiveNotifyUID/config.json`.
 
 ## Commands
 

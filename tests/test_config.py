@@ -1,7 +1,9 @@
 import builtins
 
 from LiveNotifyUID.config import (
+    CONFIG_DEFAULT,
     LiveNotifySettings,
+    _should_swallow_optional_gscore_import_error,
     coerce_bool,
     coerce_int,
     get_settings,
@@ -21,6 +23,32 @@ def test_settings_use_spec_defaults():
     assert settings.failure_backoff_minutes == 15
     assert settings.embed_enabled is True
     assert settings.notify_on_startup_live is False
+
+
+def test_config_defaults_are_module_level_for_gscore_console():
+    assert set(CONFIG_DEFAULT) >= {
+        "youtube_api_key",
+        "discord_channel_id",
+        "poll_interval_seconds",
+        "batch_size",
+        "max_concurrency",
+        "request_timeout_seconds",
+        "failure_backoff_minutes",
+        "embed_enabled",
+        "notify_on_startup_live",
+    }
+
+
+def test_config_import_guard_only_swallows_missing_gscore_root():
+    assert _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="gsuid_core")
+    )
+    assert not _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="gsuid_core.data_store")
+    )
+    assert not _should_swallow_optional_gscore_import_error(
+        ModuleNotFoundError(name="other_package")
+    )
 
 
 def test_coerce_int_clamps_bad_values_to_default():

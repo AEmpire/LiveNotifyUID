@@ -41,6 +41,7 @@ def test_gscore_plugins_parent_import_executes_registration(tmp_path):
 
     script = """
 import json
+from pathlib import Path
 import sys
 import types
 
@@ -53,6 +54,9 @@ data_store = types.ModuleType("gsuid_core.data_store")
 models = types.ModuleType("gsuid_core.models")
 aps = types.ModuleType("gsuid_core.aps")
 server = types.ModuleType("gsuid_core.server")
+plugins_config_pkg = types.ModuleType("gsuid_core.utils.plugins_config")
+gs_config = types.ModuleType("gsuid_core.utils.plugins_config.gs_config")
+config_models = types.ModuleType("gsuid_core.utils.plugins_config.models")
 
 class Plugins:
     def __init__(self, **kwargs):
@@ -80,8 +84,23 @@ class Scheduler:
     def add_job(self, *args, **kwargs):
         pass
 
+class ConfigModel:
+    def __init__(self, title, desc, data):
+        self.title = title
+        self.desc = desc
+        self.data = data
+
+class StringConfig:
+    def __init__(self, name, path, defaults):
+        self.name = name
+        self.path = path
+        self.defaults = defaults
+
+    def get_config(self, key):
+        return self.defaults[key]
+
 def get_res_path(*args, **kwargs):
-    return "."
+    return Path(".")
 
 def on_core_start(func):
     return func
@@ -92,6 +111,11 @@ data_store.get_res_path = get_res_path
 models.Event = Event
 aps.scheduler = Scheduler()
 server.on_core_start = on_core_start
+gs_config.StringConfig = StringConfig
+config_models.GSC = ConfigModel
+config_models.GsBoolConfig = ConfigModel
+config_models.GsIntConfig = ConfigModel
+config_models.GsStrConfig = ConfigModel
 
 sys.modules["gsuid_core"] = gsuid_core
 sys.modules["gsuid_core.sv"] = sv
@@ -100,6 +124,9 @@ sys.modules["gsuid_core.data_store"] = data_store
 sys.modules["gsuid_core.models"] = models
 sys.modules["gsuid_core.aps"] = aps
 sys.modules["gsuid_core.server"] = server
+sys.modules["gsuid_core.utils.plugins_config"] = plugins_config_pkg
+sys.modules["gsuid_core.utils.plugins_config.gs_config"] = gs_config
+sys.modules["gsuid_core.utils.plugins_config.models"] = config_models
 
 import LiveNotifyUID
 
