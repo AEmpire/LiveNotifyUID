@@ -8,7 +8,8 @@ import pytest
 
 from LiveNotifyUID.config import LiveNotifySettings
 from LiveNotifyUID.database import SubscriptionRepository
-from LiveNotifyUID.scheduler import run_poll_once
+from LiveNotifyUID.notifier import UnsupportedRichMessageError
+from LiveNotifyUID.scheduler import GsCoreBotAdapter, run_poll_once
 from LiveNotifyUID.types import LiveState, LiveStatus, Platform
 
 
@@ -35,6 +36,40 @@ class FakeNotifier:
 
     async def send(self, status: LiveStatus) -> None:
         self.sent.append(status)
+
+
+async def async_noop(status: LiveStatus) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_gscore_bot_adapter_translates_rich_payload_type_error():
+    class Bot:
+        async def target_send(self, *args):
+            raise TypeError("rich message unsupported")
+
+    class Gss:
+        active_bot = {"bot": Bot()}
+
+    adapter = GsCoreBotAdapter(Gss())
+
+    with pytest.raises(UnsupportedRichMessageError):
+        await adapter.send_to_channel("discord", {"title": "Live"})
+
+
+@pytest.mark.asyncio
+async def test_gscore_bot_adapter_propagates_text_type_error():
+    class Bot:
+        async def target_send(self, *args):
+            raise TypeError("send failed")
+
+    class Gss:
+        active_bot = {"bot": Bot()}
+
+    adapter = GsCoreBotAdapter(Gss())
+
+    with pytest.raises(TypeError, match="send failed"):
+        await adapter.send_to_channel("discord", "plain text")
 
 
 @pytest.mark.asyncio
@@ -112,7 +147,7 @@ async def test_run_poll_once_isolates_provider_failure(session):
         repo=repo,
         settings=LiveNotifySettings(discord_channel_id="discord"),
         providers={Platform.YOUTUBE: BrokenProvider()},
-        send=lambda status: None,
+        send=async_noop,
         now=datetime(2026, 5, 25, 1, tzinfo=timezone.utc),
     )
 
@@ -185,6 +220,56 @@ async def test_run_poll_once_notification_failure_records_error_without_marking_
     assert updated.last_notified_live_id is None
     assert updated.failure_count == 1
     assert "notification failed: discord down" in updated.last_error
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_retries_unnotified_live_after_notification_failure(
+    session,
+):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.BILI, external_id="123", display_name="主播"
+    )
+    repo.mark_checked(
+        subscription.id,
+        checked_at=datetime(2026, 5, 25, tzinfo=timezone.utc),
+        state=LiveState.OFFLINE,
+    )
+    status = LiveStatus(
+        platform=Platform.BILI,
+        external_id="123",
+        state=LiveState.LIVE,
+        live_id="same-live",
+    )
+
+    async def broken_send(status: LiveStatus) -> None:
+        raise RuntimeError("discord down")
+
+    first_run_at = datetime(2026, 5, 25, 1, tzinfo=timezone.utc)
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(discord_channel_id="discord"),
+        providers={Platform.BILI: FakeProvider(status)},
+        send=broken_send,
+        now=first_run_at,
+    )
+
+    notifier = FakeNotifier()
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(
+            discord_channel_id="discord", failure_backoff_minutes=1
+        ),
+        providers={Platform.BILI: FakeProvider(status)},
+        send=notifier.send,
+        now=first_run_at + timedelta(minutes=2),
+    )
+
+    updated = repo.get(subscription.id)
+    assert len(notifier.sent) == 1
+    assert updated.last_notified_live_id == "same-live"
+    assert updated.failure_count == 0
+    assert updated.last_error is None
 
 
 @pytest.mark.asyncio

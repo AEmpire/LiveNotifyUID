@@ -11,7 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from .config import LiveNotifySettings, get_settings
 from .database import LiveSubscription, SubscriptionRepository
-from .notifier import send_notification
+from .notifier import UnsupportedRichMessageError, send_notification
 from .providers import BilibiliProvider, LiveProvider, YouTubeProvider
 from .state_machine import TransitionDecision, decide_transition
 from .types import LiveState, LiveStatus, Platform
@@ -105,6 +105,11 @@ async def _check_subscription(
         current=status,
         notify_on_startup_live=settings.notify_on_startup_live,
     )
+    should_notify = decision is TransitionDecision.NOTIFY or _should_retry_unnotified_live(
+        previous_state=previous_state,
+        last_notified_live_id=subscription.last_notified_live_id,
+        current=status,
+    )
     repo.mark_checked(
         subscription.id,
         checked_at=checked_at,
@@ -114,7 +119,7 @@ async def _check_subscription(
         room_url=status.room_url,
     )
 
-    if decision is not TransitionDecision.NOTIFY or status.live_id is None:
+    if not should_notify or status.live_id is None:
         return
 
     try:
@@ -142,6 +147,20 @@ def _live_state(value: str) -> LiveState:
         return LiveState.UNKNOWN
 
 
+def _should_retry_unnotified_live(
+    *,
+    previous_state: LiveState,
+    last_notified_live_id: str | None,
+    current: LiveStatus,
+) -> bool:
+    return (
+        previous_state is LiveState.LIVE
+        and current.state is LiveState.LIVE
+        and current.live_id is not None
+        and current.live_id != last_notified_live_id
+    )
+
+
 class GsCoreBotAdapter:
     def __init__(self, gss: Any) -> None:
         self.gss = gss
@@ -151,16 +170,21 @@ class GsCoreBotAdapter:
             raise RuntimeError("no active bot connection")
 
         bot = next(iter(self.gss.active_bot.values()))
-        await bot.target_send(
-            message,
-            "channel",
-            str(channel_id),
-            "",
-            "",
-            "",
-            False,
-            "",
-        )
+        try:
+            await bot.target_send(
+                message,
+                "channel",
+                str(channel_id),
+                "",
+                "",
+                "",
+                False,
+                "",
+            )
+        except (TypeError, ValueError) as exc:
+            if isinstance(message, dict):
+                raise UnsupportedRichMessageError(str(exc)) from exc
+            raise
 
 
 def _live_notify_db_path(get_res_path: Callable[[str], Path]) -> Path:
@@ -203,11 +227,9 @@ async def poll_from_gscore() -> None:
 try:
     from gsuid_core.aps import scheduler
     from gsuid_core.server import on_core_start
-except (ImportError, ModuleNotFoundError) as exc:
-    if isinstance(exc, ModuleNotFoundError) and exc.name:
-        missing_root = exc.name.split(".")[0]
-        if missing_root != "gsuid_core":
-            raise
+except ModuleNotFoundError as exc:
+    if exc.name and exc.name.split(".")[0] != "gsuid_core":
+        raise
     scheduler = None  # type: ignore[assignment]
     on_core_start = None  # type: ignore[assignment]
 
