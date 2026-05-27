@@ -9,7 +9,12 @@ import pytest
 from LiveNotifyUID.config import LiveNotifySettings
 from LiveNotifyUID.database import SubscriptionRepository
 from LiveNotifyUID.notifier import UnsupportedRichMessageError
-from LiveNotifyUID.scheduler import GsCoreBotAdapter, run_poll_once
+from LiveNotifyUID.providers.base import ProviderError
+from LiveNotifyUID.scheduler import (
+    GsCoreBotAdapter,
+    build_alert_text,
+    run_poll_once,
+)
 from LiveNotifyUID.types import LiveState, LiveStatus, Platform
 
 
@@ -79,6 +84,91 @@ async def test_gscore_bot_adapter_propagates_text_type_error():
     adapter = GsCoreBotAdapter(Gss())
 
     with pytest.raises(TypeError, match="send failed"):
+        await adapter.send_to_channel("discord", "plain text")
+
+
+@pytest.mark.asyncio
+async def test_gscore_bot_adapter_routes_discord_channel_as_group_target():
+    calls = []
+
+    class Bot:
+        async def target_send(self, *args):
+            calls.append(args)
+
+    class Gss:
+        active_bot = {"bot": Bot()}
+
+    adapter = GsCoreBotAdapter(Gss())
+
+    await adapter.send_to_channel("557114123238899712", "hello")
+
+    assert calls == [
+        (
+            "hello",
+            "group",
+            "557114123238899712",
+            "discord",
+            "",
+            "",
+            False,
+            "",
+            "557114123238899712",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gscore_bot_adapter_translates_attribute_error_on_dict_payload():
+    # Regression: GsCore.target_send routes dict payloads through
+    # convert_message and later iterates with `_m.type`, surfacing
+    # AttributeError("'dict' object has no attribute 'type'"). The adapter
+    # must funnel that into UnsupportedRichMessageError so send_notification
+    # falls back to plain text instead of marking the subscription failed.
+    class Bot:
+        async def target_send(self, *args):
+            raise AttributeError("'dict' object has no attribute 'type'")
+
+    class Gss:
+        active_bot = {"bot": Bot()}
+
+    adapter = GsCoreBotAdapter(Gss())
+
+    with pytest.raises(UnsupportedRichMessageError):
+        await adapter.send_to_channel("discord", {"title": "Live"})
+
+
+@pytest.mark.asyncio
+async def test_gscore_bot_adapter_translates_arbitrary_exception_on_dict_payload():
+    # GsCore versions evolve and may raise KeyError / RuntimeError / etc when
+    # they don't understand our embed dict. Any failure on a dict payload is a
+    # "rich format unsupported" signal so the caller can degrade gracefully.
+    class Bot:
+        async def target_send(self, *args):
+            raise KeyError("data")
+
+    class Gss:
+        active_bot = {"bot": Bot()}
+
+    adapter = GsCoreBotAdapter(Gss())
+
+    with pytest.raises(UnsupportedRichMessageError):
+        await adapter.send_to_channel("discord", {"title": "Live"})
+
+
+@pytest.mark.asyncio
+async def test_gscore_bot_adapter_propagates_attribute_error_on_text_payload():
+    # AttributeError on a non-dict payload is a real bug, not a rich-format
+    # mismatch; surface it instead of swallowing it as UnsupportedRichMessage.
+    class Bot:
+        async def target_send(self, *args):
+            raise AttributeError("bot internal failure")
+
+    class Gss:
+        active_bot = {"bot": Bot()}
+
+    adapter = GsCoreBotAdapter(Gss())
+
+    with pytest.raises(AttributeError, match="bot internal failure"):
         await adapter.send_to_channel("discord", "plain text")
 
 
@@ -516,3 +606,208 @@ async def test_run_poll_once_respects_due_batch_limit(session):
     )
 
     assert provider.checked == ["0", "1"]
+
+
+# ---------------------------------------------------------------------------
+# Alert path: surface YouTube/Bilibili rate-limit / quota errors to the user
+# ---------------------------------------------------------------------------
+
+
+class _AlertRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, BaseException]] = []
+
+    async def __call__(self, subscription, exc):  # type: ignore[no-untyped-def]
+        self.calls.append((subscription.id, exc))
+
+
+class _RaisingProvider:
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+    async def check_channel(
+        self, external_id: str, *, timeout_seconds: float
+    ) -> LiveStatus:
+        raise self.exc
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_alerts_on_quota_error_first_time(session):
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.YOUTUBE, external_id="UCx", display_name="Utano"
+    )
+    alert = _AlertRecorder()
+
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(),
+        providers={
+            Platform.YOUTUBE: _RaisingProvider(
+                ProviderError("YouTube HTTP error: 403", status_code=403)
+            )
+        },
+        send=FakeNotifier().send,
+        now=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        alert_send=alert,
+    )
+
+    assert len(alert.calls) == 1
+    sub_id, exc = alert.calls[0]
+    assert sub_id == subscription.id
+    assert getattr(exc, "status_code", None) == 403
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_alerts_on_429(session):
+    repo = SubscriptionRepository(session)
+    repo.create_subscription(
+        platform=Platform.YOUTUBE, external_id="UCx", display_name="Utano"
+    )
+    alert = _AlertRecorder()
+
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(),
+        providers={
+            Platform.YOUTUBE: _RaisingProvider(
+                ProviderError("YouTube HTML HTTP error: 429", status_code=429)
+            )
+        },
+        send=FakeNotifier().send,
+        now=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        alert_send=alert,
+    )
+
+    assert len(alert.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_does_not_alert_on_generic_error(session):
+    # Non-status-code errors (network drop, JSON parse) shouldn't spam alerts.
+    repo = SubscriptionRepository(session)
+    repo.create_subscription(
+        platform=Platform.BILI, external_id="123", display_name="主播"
+    )
+    alert = _AlertRecorder()
+
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(),
+        providers={
+            Platform.BILI: _RaisingProvider(ProviderError("Bilibili request failed: timeout"))
+        },
+        send=FakeNotifier().send,
+        now=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        alert_send=alert,
+    )
+
+    assert alert.calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_does_not_alert_again_after_failure_count_grows(session):
+    # Second consecutive 403 should NOT emit another alert (failure_count was
+    # already > 0 before this poll). Avoids spamming users when quota stays
+    # exhausted for hours.
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.YOUTUBE, external_id="UCx", display_name="Utano"
+    )
+    # Simulate a previous failed poll.
+    repo.mark_failure(
+        subscription.id,
+        error="YouTube HTTP error: 403",
+        checked_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+    )
+    alert = _AlertRecorder()
+
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(failure_backoff_minutes=0),
+        providers={
+            Platform.YOUTUBE: _RaisingProvider(
+                ProviderError("YouTube HTTP error: 403", status_code=403)
+            )
+        },
+        send=FakeNotifier().send,
+        now=datetime(2026, 5, 27, 0, 30, tzinfo=timezone.utc),
+        alert_send=alert,
+    )
+
+    assert alert.calls == []
+    updated = repo.get(subscription.id)
+    assert updated.failure_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_poll_once_alert_send_failure_does_not_break_poll(session):
+    # If the alert channel itself is broken, the rest of the poll cycle must
+    # continue and the subscription must still be marked as failed.
+    repo = SubscriptionRepository(session)
+    subscription = repo.create_subscription(
+        platform=Platform.YOUTUBE, external_id="UCx", display_name="Utano"
+    )
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("alert channel down")
+
+    await run_poll_once(
+        repo=repo,
+        settings=LiveNotifySettings(),
+        providers={
+            Platform.YOUTUBE: _RaisingProvider(
+                ProviderError("YouTube HTTP error: 403", status_code=403)
+            )
+        },
+        send=FakeNotifier().send,
+        now=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        alert_send=boom,
+    )
+
+    updated = repo.get(subscription.id)
+    assert updated.failure_count == 1
+    assert "403" in updated.last_error
+
+
+def test_build_alert_text_includes_platform_subscription_and_hint():
+    sub = type(
+        "Sub",
+        (),
+        {
+            "platform": "youtube",
+            "id": 5,
+            "display_name": "Utano",
+            "external_id": "UCx",
+        },
+    )()
+    exc = ProviderError("YouTube HTTP error: 403", status_code=403)
+
+    text = build_alert_text(sub, exc)
+
+    assert "LiveNotifyUID 警报" in text
+    assert "YouTube" in text
+    assert "#5" in text
+    assert "Utano" in text
+    assert "403" in text
+    assert "配额" in text
+
+
+def test_build_alert_text_falls_back_to_external_id_without_display_name():
+    sub = type(
+        "Sub",
+        (),
+        {
+            "platform": "bili",
+            "id": 9,
+            "display_name": None,
+            "external_id": "987654",
+        },
+    )()
+    exc = ProviderError("Bilibili HTTP error: 429", status_code=429)
+
+    text = build_alert_text(sub, exc)
+
+    assert "B站" in text
+    assert "987654" in text
+    assert "429" in text

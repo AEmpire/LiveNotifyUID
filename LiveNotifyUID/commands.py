@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -29,6 +29,23 @@ class ParsedCommand:
     subscription_id: int | None = None
 
 
+@dataclass(slots=True)
+class AddSubscriptionResult:
+    """Structured outcome of /live add for rich-UI consumers (Discord embed).
+
+    Either subscription is set (success / duplicate) or error_message is set
+    (validation / resolver failure). On success, status and avatar_url come
+    from the initial provider check + (for YouTube) resolve_channel_reference.
+    """
+
+    subscription: LiveSubscription | None = None
+    status: LiveStatus | None = None
+    initial_check_error: str | None = None
+    avatar_url: str | None = None
+    duplicate: bool = False
+    error_message: str | None = None
+
+
 def parse_live_command(text: str) -> ParsedCommand:
     parts = text.strip().split()
     if not parts:
@@ -44,7 +61,7 @@ def parse_live_command(text: str) -> ParsedCommand:
             display_name=display_name,
         )
 
-    if action in {"remove", "enable", "disable", "check"}:
+    if action in {"remove", "enable", "disable", "check", "notify"}:
         if len(parts) == 2 and parts[1].isdigit():
             return ParsedCommand(action=action, subscription_id=int(parts[1]))
         return ParsedCommand(action="invalid")
@@ -95,6 +112,7 @@ def format_help() -> str:
             "/live enable <id>",
             "/live disable <id>",
             "/live check <id>",
+            "/live notify <id>",
             "/live status",
         ]
     )
@@ -225,6 +243,7 @@ async def execute_live_command(
     settings: LiveNotifySettings,
     *,
     providers: Mapping[Platform, LiveProvider] | None = None,
+    send: Callable[[LiveStatus], Awaitable[None]] | None = None,
     now: datetime | None = None,
 ) -> str:
     if parsed.action in {"help", "invalid"}:
@@ -305,7 +324,105 @@ async def execute_live_command(
                 return "未找到该直播监听"
         return _format_subscription_detail(row)
 
+    if parsed.action == "notify" and parsed.subscription_id is not None:
+        if providers is None or send is None:
+            return "notify 需要在已连接 Discord 的 GsCore / NoneBot 环境中执行"
+        from .scheduler import force_notify_subscription
+
+        return await force_notify_subscription(
+            repo,
+            parsed.subscription_id,
+            settings,
+            providers,
+            send,
+            checked_at=checked_at,
+        )
+
     return build_command_response(session, parsed, settings)
+
+
+async def add_subscription_with_details(
+    session: Session,
+    parsed: ParsedCommand,
+    settings: LiveNotifySettings,
+    *,
+    providers: Mapping[Platform, LiveProvider] | None = None,
+    now: datetime | None = None,
+) -> AddSubscriptionResult:
+    """Execute /live add and return structured data (subscription + status +
+    avatar_url) so callers can render a rich embed.
+
+    Mirrors execute_live_command's add branch but does not flatten everything
+    into a string, so the Discord slash handler can show the channel name and
+    avatar without re-querying the DB or the upstream provider.
+    """
+    if parsed.action != "add":
+        return AddSubscriptionResult(error_message="not an add command")
+
+    if parsed.platform not in {Platform.BILI.value, Platform.YOUTUBE.value}:
+        return AddSubscriptionResult(error_message="不支持的平台，请使用 bili 或 youtube。")
+    if parsed.external_id is None:
+        return AddSubscriptionResult(error_message=format_help())
+
+    external_id = parsed.external_id
+    display_name = parsed.display_name
+    platform = Platform(parsed.platform)
+    resolved_avatar_url: str | None = None
+
+    if platform is Platform.YOUTUBE and providers is not None:
+        provider = providers.get(Platform.YOUTUBE)
+        resolver = getattr(provider, "resolve_channel_reference", None)
+        if resolver is not None:
+            try:
+                resolved = await resolver(
+                    external_id,
+                    timeout_seconds=settings.request_timeout_seconds,
+                )
+            except ProviderError as exc:
+                return AddSubscriptionResult(
+                    error_message=f"YouTube 频道解析失败：{exc}"
+                )
+            external_id = resolved.channel_id
+            display_name = display_name or resolved.display_name
+            resolved_avatar_url = getattr(resolved, "avatar_url", None)
+
+    repo = SubscriptionRepository(session)
+    try:
+        subscription = repo.create_subscription(
+            platform=platform,
+            external_id=external_id,
+            display_name=display_name,
+        )
+    except IntegrityError:
+        session.rollback()
+        return AddSubscriptionResult(duplicate=True, error_message="该直播监听已存在")
+
+    if providers is None:
+        return AddSubscriptionResult(
+            subscription=subscription, avatar_url=resolved_avatar_url
+        )
+
+    status, error = await _refresh_subscription_status(
+        repo=repo,
+        subscription=subscription,
+        settings=settings,
+        providers=providers,
+        checked_at=now or datetime.now(timezone.utc),
+    )
+    # Avatar precedence: provider's resolve metadata (YouTube channels API) >
+    # status returned by check_channel (Bilibili face). Resolve-time data is
+    # usually richer for YouTube and check_channel may not include avatars.
+    avatar_url = resolved_avatar_url or (status.avatar_url if status else None)
+
+    # Refresh subscription so caller sees the latest display_name/room_url
+    # written by mark_checked during the initial check.
+    refreshed = repo.get(subscription.id) or subscription
+    return AddSubscriptionResult(
+        subscription=refreshed,
+        status=status,
+        initial_check_error=error,
+        avatar_url=avatar_url,
+    )
 
 
 async def _refresh_subscription_status(
@@ -367,7 +484,15 @@ except ModuleNotFoundError as exc:
 
 if SV is not None and get_res_path is not None:
     from .config import get_settings
-    from .scheduler import build_default_providers
+    from .notifier import send_notification
+    from .scheduler import GsCoreBotAdapter, build_default_providers
+
+    try:
+        from gsuid_core.gss import gss
+    except ModuleNotFoundError as exc:
+        if exc.name != "gsuid_core.gss":
+            raise
+        gss = None  # type: ignore[assignment]
 
     live_sv = SV("直播监听管理", pm=6)
 
@@ -386,12 +511,24 @@ if SV is not None and get_res_path is not None:
             else parse_live_command(normalized)
         )
         settings = get_settings()
+        gscore_bot = GsCoreBotAdapter(gss) if gss is not None else None
+        providers = build_default_providers(settings)
         with open_repo() as session:
             response = await execute_live_command(
                 session,
                 parsed,
                 settings,
-                providers=build_default_providers(settings),
+                providers=providers,
+                send=(
+                    None
+                    if gscore_bot is None
+                    else lambda status: send_notification(
+                        gscore_bot,
+                        channel_id=settings.discord_channel_id,
+                        status=status,
+                        embed_enabled=settings.embed_enabled,
+                    )
+                ),
             )
         return await bot.send(response)
 else:

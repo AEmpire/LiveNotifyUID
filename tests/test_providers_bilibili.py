@@ -185,3 +185,95 @@ async def test_bilibili_malformed_data_raises_provider_error(payload):
 
     with pytest.raises(ProviderError):
         await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_offline_response_extracts_avatar_url_from_face():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 0,
+                        "uname": "主播A",
+                        "face": "https://i0.hdslb.com/bfs/face/abc.jpg",
+                    }
+                },
+            },
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.avatar_url == "https://i0.hdslb.com/bfs/face/abc.jpg"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_live_response_extracts_avatar_url_from_face():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 1,
+                        "room_id": 678,
+                        "title": "Bili Live",
+                        "uname": "主播A",
+                        "face": "https://i0.hdslb.com/bfs/face/xyz.jpg",
+                    }
+                },
+            },
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.state is LiveState.LIVE
+    assert status.avatar_url == "https://i0.hdslb.com/bfs/face/xyz.jpg"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_avatar_url_is_upgraded_to_https():
+    # Discord embed thumbnails may reject http; bilibili sometimes returns
+    # face URLs over http even though hdslb supports https.
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "12345": {
+                        "live_status": 0,
+                        "uname": "主播A",
+                        "face": "http://i0.hdslb.com/bfs/face/abc.jpg",
+                    }
+                },
+            },
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.avatar_url == "https://i0.hdslb.com/bfs/face/abc.jpg"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_bilibili_avatar_url_is_none_when_face_missing():
+    respx.get(BILIBILI_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 0, "data": {"12345": {"live_status": 0, "uname": "主播A"}}},
+        )
+    )
+
+    status = await BilibiliProvider().check_channel("12345", timeout_seconds=10)
+
+    assert status.avatar_url is None

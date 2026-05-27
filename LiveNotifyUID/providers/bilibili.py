@@ -30,7 +30,10 @@ class BilibiliProvider:
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPStatusError as exc:
-            raise ProviderError(f"Bilibili HTTP error: {exc.response.status_code}") from exc
+            raise ProviderError(
+                f"Bilibili HTTP error: {exc.response.status_code}",
+                status_code=exc.response.status_code,
+            ) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"Bilibili request failed: {exc}") from exc
         except ValueError as exc:
@@ -63,6 +66,7 @@ class BilibiliProvider:
             external_id=external_id,
             state=LiveState.OFFLINE,
             display_name=_string_or_none(raw.get("uname")),
+            avatar_url=_force_https(_string_or_none(raw.get("face"))),
             raw_metadata=raw,
         )
 
@@ -81,6 +85,7 @@ class BilibiliProvider:
             display_name=_string_or_none(raw.get("uname")),
             room_url=room_url,
             cover_url=_string_or_none(raw.get("cover_from_user") or raw.get("keyframe")),
+            avatar_url=_force_https(_string_or_none(raw.get("face"))),
             raw_metadata=raw,
         )
 
@@ -89,6 +94,16 @@ def _string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _force_https(url: str | None) -> str | None:
+    # Bilibili 偶尔返回 http://i*.hdslb.com/... 的头像 URL；Discord embed thumbnail
+    # / author icon 在某些客户端下会拒绝 http 资源，统一升级到 https（hdslb 支持）。
+    if url is None:
+        return None
+    if url.startswith("http://"):
+        return "https://" + url[len("http://") :]
+    return url
 
 
 def _bilibili_live_id(room_id: str | None, raw: dict[str, Any]) -> str | None:

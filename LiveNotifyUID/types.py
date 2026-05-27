@@ -27,5 +27,6 @@ class LiveStatus:
     display_name: str | None = None
     room_url: str | None = None
     cover_url: str | None = None
+    avatar_url: str | None = None
     started_at: datetime | None = None
     raw_metadata: dict[str, Any] = field(default_factory=dict)

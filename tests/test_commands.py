@@ -3,6 +3,7 @@ import pytest
 from LiveNotifyUID.config import LiveNotifySettings
 from LiveNotifyUID.commands import (
     LIVE_COMMAND_TRIGGER,
+    add_subscription_with_details,
     build_command_response,
     execute_live_command,
     normalize_live_handler_text,
@@ -327,3 +328,107 @@ def test_build_command_response_reports_status(session):
     response = build_command_response(session, parse_live_command("status"), settings)
 
     assert response == "直播监听状态：总数 1，启用 0，失败 0，YouTube API Key 已配置"
+
+
+@pytest.mark.asyncio
+async def test_add_subscription_with_details_returns_bilibili_avatar(session):
+    settings = LiveNotifySettings()
+    provider = FakeProvider(
+        LiveStatus(
+            platform=Platform.BILI,
+            external_id="12345",
+            state=LiveState.OFFLINE,
+            display_name="主播A",
+            avatar_url="https://i0.hdslb.com/bfs/face/abc.jpg",
+        )
+    )
+
+    result = await add_subscription_with_details(
+        session,
+        parse_live_command("add bili 12345 主播A"),
+        settings,
+        providers={Platform.BILI: provider},
+    )
+
+    assert result.error_message is None
+    assert result.duplicate is False
+    assert result.subscription is not None
+    assert result.subscription.id == 1
+    assert result.subscription.display_name == "主播A"
+    assert result.subscription.platform == "bili"
+    assert result.status is not None
+    assert result.status.state is LiveState.OFFLINE
+    assert result.avatar_url == "https://i0.hdslb.com/bfs/face/abc.jpg"
+    assert result.initial_check_error is None
+
+
+@pytest.mark.asyncio
+async def test_add_subscription_with_details_returns_youtube_avatar_from_resolve(
+    session,
+):
+    settings = LiveNotifySettings(youtube_api_key="token")
+    provider = FakeResolvingYouTubeProvider(
+        LiveStatus(
+            platform=Platform.YOUTUBE,
+            external_id="UCresolved",
+            state=LiveState.OFFLINE,
+        ),
+        ResolvedYouTubeChannel(
+            channel_id="UCresolved",
+            display_name="Utano",
+            avatar_url="https://yt3.example/avatar.jpg",
+        ),
+    )
+
+    result = await add_subscription_with_details(
+        session,
+        parse_live_command("add youtube https://www.youtube.com/@UTANOch"),
+        settings,
+        providers={Platform.YOUTUBE: provider},
+    )
+
+    assert result.error_message is None
+    assert result.subscription is not None
+    assert result.subscription.external_id == "UCresolved"
+    assert result.subscription.display_name == "Utano"
+    assert result.avatar_url == "https://yt3.example/avatar.jpg"
+
+
+@pytest.mark.asyncio
+async def test_add_subscription_with_details_marks_duplicate(session):
+    settings = LiveNotifySettings()
+    provider = FakeProvider(
+        LiveStatus(
+            platform=Platform.BILI,
+            external_id="12345",
+            state=LiveState.OFFLINE,
+            display_name="主播A",
+        )
+    )
+    parsed = parse_live_command("add bili 12345 主播A")
+    await add_subscription_with_details(
+        session, parsed, settings, providers={Platform.BILI: provider}
+    )
+
+    duplicate = await add_subscription_with_details(
+        session, parsed, settings, providers={Platform.BILI: provider}
+    )
+
+    assert duplicate.duplicate is True
+    assert duplicate.subscription is None
+    assert duplicate.error_message == "该直播监听已存在"
+
+
+@pytest.mark.asyncio
+async def test_add_subscription_with_details_rejects_unsupported_platform(session):
+    settings = LiveNotifySettings()
+
+    result = await add_subscription_with_details(
+        session,
+        parse_live_command("add twitch tw_user"),
+        settings,
+        providers={},
+    )
+
+    assert result.subscription is None
+    assert result.error_message and "不支持的平台" in result.error_message
